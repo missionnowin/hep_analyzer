@@ -301,10 +301,6 @@ class UnifiedAnalysisEngine:
                         
                         if result.get('success', False):
                             completed_runs.append(run_name)
-                            ProgressDisplay.print_to_console(
-                                f"  [{result_count}/{len(futures)}] ✓ {run_name}",
-                                lock, states, total
-                            )
                         else:
                             failed_runs.append(run_name)
                             error_msg = result.get('error', 'Unknown error')
