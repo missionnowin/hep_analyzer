@@ -1,12 +1,8 @@
-# cumulative_detector.py
-# Cumulative Effect Detector for UrQMD Collisions
-# Analyzes modified (cumulative) vs unmodified collision data
-# Identifies signatures of cumulative scattering effects
-
 import sys
+from pathlib import Path
+from typing import List, Optional, Tuple
 import numpy as np
 import matplotlib.pyplot as plt
-from typing import List, Dict, Optional
 
 # Physical constants
 M_NUCLEON = 0.938  # GeV (nucleon mass)
@@ -14,449 +10,538 @@ M_PION = 0.140     # GeV (for reference)
 
 try:
     from models.cumulative_singnature import CumulativeSignature
+    from models.particle import Particle
 except ImportError as e:
     print(f"Error importing modules: {e}")
     sys.exit(1)
 
 class CumulativeEffectDetector:
-    """
-    Detect cumulative scattering effects in collision data
+    """Detect cumulative scattering effects in particle data
     
-    CRITERIA FOR CUMULATIVE PARTICLES (e.g. Au+Au 10 GeV):
-    ──────────────────────────────────────────────────
-    1. Cumulative variable x > 1.0 (or x > 1.1 for safety)
-       where x = (E - p_L) / m_N
-       - E: particle total energy
-       - p_L: longitudinal momentum (beam direction)
-       - m_N: nucleon mass
+    Analyzes both modified (with cumulative effects) and unmodified particles
+    to identify signatures of cumulative interactions.
     
-    2. Forward direction: x_F > 0.3 (Feynman scaling variable)
-    
-    3. Non-relativistic regime: β < 0.95 (v/c < 0.95)
-    
-    Physical interpretation:
-    - x > 1 means particle uses >1 nucleon's worth of momentum
-    - Only possible with multi-nucleon correlation
-    - Signature of cumulative scattering
+    Usage:
+        detector = CumulativeEffectDetector(particles_modified, particles_unmodified)
+        detector.detect_all_signatures()
+        likelihood = detector.get_cumulative_likelihood()
+        for sig in detector.signatures:
+            print(f"Effect: {sig.signature_type}, Strength: {sig.strength:.2f}")
+            print(f"  {sig.description}")
     """
     
-    def __init__(self, particles_modified: List, particles_unmodified: List = None):
-        self.particles_modified = particles_modified
-        self.particles_unmodified = particles_unmodified
-        self.signatures = []
-        self.comparison_stats = {}
-        
-        # Au+Au 10 GeV specific parameters
-        self.cumulative_threshold = 1.1  # x > 1.1 for cumulative
-        self.forward_cut_xf = 0.3        # x_F > 0.3
-        self.cm_energy = 10.0            # GeV (√s_NN)
-    
-    @staticmethod
-    def calculate_cumulative_variable(px, py, pz, mass=0.938):
+    def __init__(self, particles_modified: Optional[List[Particle]] = None,
+                 particles_unmodified: Optional[List[Particle]] = None):
         """
-        Calculate cumulative variable x = (E - p_L) / m_N
+        Initialize detector with modified and unmodified particle samples
         
         Args:
-            px, py, pz: Cartesian momentum components (GeV)
-            mass: Particle rest mass (default: nucleon mass 0.938 GeV)
-        
-        
-        Returns:
-            Cumulative variable x (dimensionless)
+            particles_modified: Particles after cumulative interactions
+            particles_unmodified: Baseline particles without cumulative effects
         """
-        # Total energy: E = sqrt(p^2 + m^2)
-        p_mag = np.sqrt(px**2 + py**2 + pz**2)
-        E = np.sqrt(p_mag**2 + mass**2)
-        
-        # Longitudinal momentum (beam direction is z)
-        p_L = pz
-        
-        # Cumulative variable
-        x = (E - p_L) / M_NUCLEON
-        
-        return x
-    
-    @staticmethod
-    def calculate_feynman_xf(pz, p_L_max=None):
-        """
-        Calculate Feynman scaling variable x_F = p_L / p_L_max
-        
-        For Au+Au 10 GeV: p_L_max ≈ sqrt(s_NN)/2 ≈ 5 GeV/nucleon
-        
-        Args:
-            pz: Longitudinal momentum (GeV)
-            p_L_max: Maximum longitudinal momentum (default for 10 GeV)
-        
-        Returns:
-            Feynman x_F (-1 to +1, positive = forward)
-        """
-        if p_L_max is None:
-            p_L_max = 10.0 / 2.0  # √s_NN / 2 for 10 GeV
-        
-        xf = pz / p_L_max
-        return np.clip(xf, -1.0, 1.0)
-    
-    def identify_cumulative_particles(self, particles: List) -> Dict:
-        """
-        Identify particles satisfying cumulative criteria
-        
-        Returns:
-            {
-                'cumulative_mask': boolean array,
-                'x_values': cumulative variables,
-                'xf_values': Feynman variables,
-                'n_cumulative': count of cumulative particles,
-                'fraction': fraction of all particles
-            }
-        """
-        if not particles:
-            return {'cumulative_mask': np.array([]), 'x_values': np.array([])}
-        
-        # Calculate x and x_F for all particles
-        x_array = np.array([
-            self.calculate_cumulative_variable(p.px, p.py, p.pz, p.mass)
-            for p in particles
-        ])
-        
-        xf_array = np.array([
-            self.calculate_feynman_xf(p.pz)
-            for p in particles
-        ])
-        
-        # Cumulative criteria: x > threshold AND forward direction
-        cumulative_mask = (x_array > self.cumulative_threshold) & (xf_array > self.forward_cut_xf)
-        
-        return {
-            'cumulative_mask': cumulative_mask,
-            'x_values': x_array,
-            'xf_values': xf_array,
-            'n_cumulative': np.sum(cumulative_mask),
-            'fraction': np.sum(cumulative_mask) / len(particles) if len(particles) > 0 else 0,
-            'x_mean': np.mean(x_array[cumulative_mask]) if np.sum(cumulative_mask) > 0 else 0,
-            'x_max': np.max(x_array) if len(x_array) > 0 else 0
-        }
-    
-    def detect_cumulative_signal(self) -> Optional[CumulativeSignature]:
-        """
-        PRIMARY DETECTOR: Direct identification via cumulative variable x
-        """
-        cum_stats_mod = self.identify_cumulative_particles(self.particles_modified)
-        n_cum_mod = cum_stats_mod['n_cumulative']
-        frac_cum_mod = cum_stats_mod['fraction']
-        
-        if n_cum_mod == 0:
-            return None
-        
-        if not self.particles_unmodified:
-            # Single sample: presence of x > 1.1 particles indicates cumulative effects
-            strength = min(frac_cum_mod / 0.1, 1.0)  # 10% cumulative → strength=1.0
-            
-            return CumulativeSignature(
-                signature_type='cumulative_variable',
-                strength=strength,
-                confidence=0.95,  # High confidence - direct kinematic criterion
-                affected_particles=n_cum_mod,
-                description=f'Direct cumulative detection: {n_cum_mod} particles with x > {self.cumulative_threshold} '
-                           f'({frac_cum_mod*100:.1f}% of sample). Max x = {cum_stats_mod["x_max"]:.2f}. '
-                           f'These particles require multi-nucleon correlation.'
-            )
-        else:
-            # Comparison mode
-            cum_stats_unmod = self.identify_cumulative_particles(self.particles_unmodified)
-            n_cum_unmod = cum_stats_unmod['n_cumulative']
-            frac_cum_unmod = cum_stats_unmod['fraction']
-            
-            # Modified should have MORE cumulative particles
-            if frac_cum_mod > frac_cum_unmod:
-                frac_increase = (frac_cum_mod - frac_cum_unmod) / max(frac_cum_unmod, 0.01)
-                strength = min(frac_increase / 2.0, 1.0)
-                
-                return CumulativeSignature(
-                    signature_type='cumulative_variable',
-                    strength=strength,
-                    confidence=0.95,
-                    affected_particles=n_cum_mod,
-                    description=f'Cumulative effect enhancement: Modified sample has {frac_cum_mod*100:.1f}% '
-                               f'cumulative particles vs {frac_cum_unmod*100:.1f}% in unmodified. '
-                               f'Ratio: {frac_cum_mod/max(frac_cum_unmod, 0.001):.1f}x. '
-                               f'Modified max x = {cum_stats_mod["x_max"]:.2f}, Unmodified max x = {cum_stats_unmod["x_max"]:.2f}'
-                )
-        
-        return None
-    
-    def detect_pt_broadening(self, threshold: float = 0.20) -> Optional[CumulativeSignature]:
-        """
-        SECONDARY DETECTOR: pT broadening from multiple scattering
-        
-        For Au+Au 10 GeV, typical pT broadening is 15-25% for cumulative effects
-        """
-        if not self.particles_unmodified:
-            return None  # Need comparison for reliable detection
-        
-        # Calculate pT for both samples
-        pt_mod = np.array([np.sqrt(p.px**2 + p.py**2) for p in self.particles_modified])
-        pt_unmod = np.array([np.sqrt(p.px**2 + p.py**2) for p in self.particles_unmodified])
-        
-        std_mod = np.std(pt_mod)
-        std_unmod = np.std(pt_unmod)
-        
-        if std_unmod > 0:
-            broadening_ratio = std_mod / std_unmod
-            
-            if broadening_ratio > (1.0 + threshold):
-                strength = min((broadening_ratio - 1.0) / 0.3, 1.0)
-                
-                return CumulativeSignature(
-                    signature_type='pt_broadening',
-                    strength=strength,
-                    confidence=0.75,  # Lower confidence than direct criterion
-                    affected_particles=len(self.particles_modified),
-                    description=f'pT broadening (indirect signature): {broadening_ratio:.2f}x increase. '
-                               f'Unmodified σ_pT = {std_unmod:.3f} GeV, '
-                               f'Modified σ_pT = {std_mod:.3f} GeV. '
-                               f'Consistent with cumulative scattering.'
-                )
-        
-        return None
-    
-    def detect_forward_enhancement(self) -> Optional[CumulativeSignature]:
-        """
-        SECONDARY DETECTOR: Enhanced forward (large x_F) particle production
-        
-        Cumulative particles concentrate in forward direction
-        """
-        xf_mod = np.array([self.calculate_feynman_xf(p.pz) for p in self.particles_modified])
-        
-        # Fraction in forward region (x_F > 0.3)
-        frac_forward_mod = np.sum(xf_mod > 0.3) / len(xf_mod)
-        
-        if not self.particles_unmodified:
-            if frac_forward_mod > 0.35:
-                return CumulativeSignature(
-                    signature_type='forward_enhancement',
-                    strength=min((frac_forward_mod - 0.25) / 0.2, 1.0),
-                    confidence=0.65,
-                    affected_particles=int(frac_forward_mod * len(self.particles_modified)),
-                    description=f'Forward particle enhancement: {frac_forward_mod*100:.1f}% with x_F > 0.3. '
-                               f'Cumulative particles preferentially produce forward.'
-                )
-        else:
-            xf_unmod = np.array([self.calculate_feynman_xf(p.pz) for p in self.particles_unmodified])
-            frac_forward_unmod = np.sum(xf_unmod > 0.3) / len(xf_unmod)
-            
-            if frac_forward_mod > frac_forward_unmod * 1.2:
-                return CumulativeSignature(
-                    signature_type='forward_enhancement',
-                    strength=min((frac_forward_mod - frac_forward_unmod) / 0.1, 1.0),
-                    confidence=0.70,
-                    affected_particles=int((frac_forward_mod - frac_forward_unmod) * len(self.particles_modified)),
-                    description=f'Forward particle enhancement: Modified {frac_forward_mod*100:.1f}% '
-                               f'vs Unmodified {frac_forward_unmod*100:.1f}% with x_F > 0.3.'
-                )
-        
-        return None
+        self.particles_modified = particles_modified or []
+        self.particles_unmodified = particles_unmodified or []
+        self.signatures: List[CumulativeSignature] = []
+        self._cumulative_likelihood = 0.0
     
     def detect_all_signatures(self) -> List[CumulativeSignature]:
-        """Run all detectors in priority order"""
+        """Run all cumulative effect detection methods
+        
+        Returns:
+            List of detected signatures
+        """
         self.signatures = []
         
-        # Priority 1: Direct cumulative variable detection (highest confidence)
-        sig = self.detect_cumulative_signal()
-        if sig:
-            self.signatures.append(sig)
+        if not self.particles_modified:
+            return self.signatures
         
-        # Priority 2: Secondary indicators (lower confidence)
-        for detector in [
-            self.detect_forward_enhancement,
-            self.detect_pt_broadening
-        ]:
-            sig = detector()
-            if sig:
-                self.signatures.append(sig)
+        # Run all detection methods
+        self._detect_angular_deflection()
+        self._detect_energy_loss()
+        self._detect_spectrum_modification()
+        self._detect_forward_backward_asymmetry()
+        self._detect_pt_suppression()
+        
+        # Calculate overall likelihood
+        self._calculate_cumulative_likelihood()
         
         return self.signatures
     
-    def print_report(self) -> None:
-        """Print detailed cumulative effect report"""
-        if not self.signatures:
-            self.detect_all_signatures()
+    def _detect_angular_deflection(self) -> None:
+        """Detect angular deflection of high-pT particles
         
-        print("\n" + "="*80)
-        print("CUMULATIVE SCATTERING EFFECT ANALYSIS - Au+Au 10 GeV")
-        print("="*80)
-        
-        # Show cumulative variable analysis
-        print("\n📊 CUMULATIVE VARIABLE ANALYSIS (x = (E - p_L) / m_N):")
-        print("-" * 80)
-        
-        cum_mod = self.identify_cumulative_particles(self.particles_modified)
-        print(f"Modified sample:")
-        print(f"  Cumulative particles (x > {self.cumulative_threshold}): {cum_mod['n_cumulative']} / {len(self.particles_modified)} "
-              f"({cum_mod['fraction']*100:.1f}%)")
-        print(f"  Max x observed: {cum_mod['x_max']:.2f}")
-        print(f"  Mean x (cumulative particles): {cum_mod['x_mean']:.2f}")
-        
-        if self.particles_unmodified:
-            cum_unmod = self.identify_cumulative_particles(self.particles_unmodified)
-            print(f"\nUnmodified sample:")
-            print(f"  Cumulative particles (x > {self.cumulative_threshold}): {cum_unmod['n_cumulative']} / {len(self.particles_unmodified)} "
-                  f"({cum_unmod['fraction']*100:.1f}%)")
-            print(f"  Max x observed: {cum_unmod['x_max']:.2f}")
-        
-        # Show detected signatures
-        print(f"\n🔍 DETECTED SIGNATURES ({len(self.signatures)} total):")
-        print("-" * 80)
-        
-        if not self.signatures:
-            print("No significant cumulative effects detected.")
-        else:
-            for i, sig in enumerate(self.signatures, 1):
-                print(f"\n{i}. {sig.signature_type.upper()}")
-                print(f"   Strength: {sig.strength:.2f} | Confidence: {sig.confidence:.2f}")
-                print(f"   Affected: {sig.affected_particles} particles")
-                print(f"   {sig.description}")
-        
-        print(f"\n{'='*80}\n")
-    
-    def get_cumulative_likelihood(self) -> float:
+        Cumulative scattering causes particles to deviate from original direction.
+        Look for particles with large angle changes.
         """
-        Calculate overall cumulative effect likelihood
-        
-        Heavily weighted toward direct cumulative variable detection
-        """
-        if not self.signatures:
-            self.detect_all_signatures()
-        
-        if not self.signatures:
-            return 0.0
-        
-        # Primary signature (cumulative_variable) gets 70% weight
-        primary_score = 0.0
-        secondary_score = 0.0
-        
-        for sig in self.signatures:
-            if sig.signature_type == 'cumulative_variable':
-                primary_score = sig.strength * sig.confidence * 0.7
-            else:
-                secondary_score += sig.strength * sig.confidence * 0.15
-        
-        overall = min(primary_score + secondary_score, 1.0)
-        return overall
-
-
-class CumulativeComparisonVisualizer:
-    """Visualization for cumulative effect analysis"""
-    
-    def __init__(self, detector: CumulativeEffectDetector):
-        self.detector = detector
-    
-    def plot_cumulative_variable(self, output_file: Optional[str] = None) -> None:
-        """Plot cumulative variable x = (E - p_L) / m_N distributions"""
-        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-        fig.suptitle('Cumulative Variable Distribution: x = (E - p_L) / m_N', 
-                    fontsize=14, fontweight='bold')
-        
-        x_mod = np.array([
-            self.detector.calculate_cumulative_variable(p.px, p.py, p.pz, p.mass)
-            for p in self.detector.particles_modified
-        ])
-        
-        # Modified distribution
-        ax = axes[0]
-        ax.hist(x_mod, bins=50, color='steelblue', alpha=0.7, edgecolor='black', range=(0, 3))
-        ax.axvline(self.detector.cumulative_threshold, color='red', linestyle='--', 
-                  linewidth=2, label=f'Cumulative threshold (x={self.detector.cumulative_threshold})')
-        ax.set_xlabel('Cumulative Variable x', fontsize=11)
-        ax.set_ylabel('Count', fontsize=11)
-        ax.set_title('Modified (Cumulative)', fontsize=12, fontweight='bold')
-        ax.legend()
-        ax.grid(alpha=0.3)
-        
-        # Unmodified or statistics
-        if self.detector.particles_unmodified:
-            ax = axes[1]
-            x_unmod = np.array([
-                self.detector.calculate_cumulative_variable(p.px, p.py, p.pz, p.mass)
-                for p in self.detector.particles_unmodified
-            ])
-            ax.hist(x_unmod, bins=50, color='darkgreen', alpha=0.7, edgecolor='black', range=(0, 3))
-            ax.axvline(self.detector.cumulative_threshold, color='red', linestyle='--',
-                      linewidth=2, label=f'Cumulative threshold (x={self.detector.cumulative_threshold})')
-            ax.set_xlabel('Cumulative Variable x', fontsize=11)
-            ax.set_ylabel('Count', fontsize=11)
-            ax.set_title('Unmodified (Baseline)', fontsize=12, fontweight='bold')
-            ax.legend()
-            ax.grid(alpha=0.3)
-        else:
-            ax = axes[1]
-            ax.axis('off')
-            cum_mod = self.detector.identify_cumulative_particles(self.detector.particles_modified)
-            stats_text = f"""
-Cumulative Particle Statistics:
-━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Particles with x > {self.detector.cumulative_threshold}: {cum_mod['n_cumulative']}
-Fraction: {cum_mod['fraction']*100:.1f}%
-Mean x (cumulative): {cum_mod['x_mean']:.2f}
-Max x: {cum_mod['x_max']:.2f}
-
-Threshold: x > 1 means particle
-uses >1 nucleon's worth of momentum
-→ requires multi-nucleon correlation
-            """
-            ax.text(0.1, 0.5, stats_text, fontsize=10, family='monospace',
-                   verticalalignment='center',
-                   bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.9))
-        
-        plt.tight_layout()
-        if output_file:
-            plt.savefig(output_file, dpi=300, bbox_inches='tight')
-            print(f"Cumulative variable plot saved to {output_file}")
-        plt.show()
-    
-    def plot_signatures(self, output_file: Optional[str] = None) -> None:
-        """Plot detected signatures"""
-        if not self.detector.signatures:
-            self.detector.detect_all_signatures()
-        
-        if not self.detector.signatures:
-            print("No signatures to plot")
+        if not self.particles_modified or not self.particles_unmodified:
             return
         
-        fig, ax = plt.subplots(figsize=(12, 6))
+        if len(self.particles_modified) != len(self.particles_unmodified):
+            return
         
-        sig_names = [s.signature_type for s in self.detector.signatures]
-        strengths = [s.strength for s in self.detector.signatures]
-        confidences = [s.confidence for s in self.detector.signatures]
+        # Calculate angles for modified particles
+        theta_mod = np.array([
+            self._calculate_polar_angle(p) for p in self.particles_modified
+        ], dtype=np.float32)
         
-        x = np.arange(len(sig_names))
-        width = 0.35
+        # Calculate angles for unmodified particles
+        theta_unm = np.array([
+            self._calculate_polar_angle(p) for p in self.particles_unmodified
+        ], dtype=np.float32)
         
-        bars1 = ax.bar(x - width/2, strengths, width, label='Strength', 
-                      color='steelblue', alpha=0.7, edgecolor='black')
-        bars2 = ax.bar(x + width/2, confidences, width, label='Confidence',
-                      color='darkgreen', alpha=0.7, edgecolor='black')
+        # Calculate angle differences
+        delta_theta = np.abs(theta_mod - theta_unm)
+        delta_theta_deg = np.degrees(delta_theta)
         
-        ax.set_ylabel('Score (0-1)', fontsize=12)
-        ax.set_title('Cumulative Effect Signatures - Au+Au 10 GeV', fontsize=13, fontweight='bold')
+        # Select high-pT particles
+        pt_mod = np.array([
+            np.sqrt(p.px**2 + p.py**2) for p in self.particles_modified
+        ], dtype=np.float32)
+        
+        high_pt_mask = pt_mod > 1.0 # GeV
+        
+        if high_pt_mask.sum() > 0:
+            mean_deflection = np.mean(delta_theta_deg[high_pt_mask])
+            std_deflection = np.std(delta_theta_deg[high_pt_mask])
+
+            # Strength: normalized by typical deflection (~0.5 degrees for significant effect)
+            strength = min(1.0, mean_deflection / 0.5)
+            affected = int(high_pt_mask.sum())
+
+            # Confidence based on statistical significance
+            if std_deflection > 0 and affected > 10:
+                confidence = min(1.0, (mean_deflection / std_deflection) / 3.0)
+            else:
+                confidence = 0.3
+            
+            if strength > 0.05: # Only report if detectable
+                sig = CumulativeSignature(
+                    signature_type="angular_deflection",
+                    strength=strength,
+                    confidence=confidence,
+                    affected_particles=affected,
+                    description=f"High-pT particles deflected by {mean_deflection:.2f}° (±{std_deflection:.2f}°)"
+                )
+                self.signatures.append(sig)
+    
+    def _detect_energy_loss(self) -> None:
+        """Detect energy loss in modified particles
+        
+        Cumulative interactions cause particles to lose energy traversing medium.
+        Compare total momentum distributions.
+        """
+        if not self.particles_modified or not self.particles_unmodified:
+            return
+        
+        # Calculate total momentum
+        p_mod = np.array([
+            np.sqrt(p.px**2 + p.py**2 + p.pz**2) for p in self.particles_modified
+        ], dtype=np.float32)
+        
+        p_unm = np.array([
+            np.sqrt(p.px**2 + p.py**2 + p.pz**2) for p in self.particles_unmodified
+        ], dtype=np.float32)
+        
+        # Calculate mean momentum
+        mean_p_mod = np.mean(p_mod[p_mod > 0.1])
+        mean_p_unm = np.mean(p_unm[p_unm > 0.1])
+        
+        if mean_p_unm > 0:
+            energy_loss_fraction = (mean_p_unm - mean_p_mod) / mean_p_unm
+            
+            # Only consider as signature if loss is significant (>5%)
+            if energy_loss_fraction > 0.05:
+                strength = min(1.0, energy_loss_fraction / 0.3)
+
+                # Confidence based on how consistent the loss is
+                p_ratio = p_mod[p_mod > 0.1] / mean_p_unm
+                consistency = 1.0 - np.std(p_ratio)
+                confidence = min(1.0, max(0.3, consistency))
+                
+                sig = CumulativeSignature(
+                    signature_type="energy_loss",
+                    strength=strength,
+                    confidence=confidence,
+                    affected_particles=len(self.particles_modified),
+                    description=f"Average momentum loss: {energy_loss_fraction*100:.1f}%"
+                )
+                self.signatures.append(sig)
+    
+    def _detect_spectrum_modification(self) -> None:
+        """Detect modification of pT spectrum
+        
+        Cumulative effects typically suppress high-pT particles.
+        """
+        if not self.particles_modified or not self.particles_unmodified:
+            return
+        
+        # Calculate pT distributions
+        pt_mod = np.array([
+            np.sqrt(p.px**2 + p.py**2) for p in self.particles_modified
+        ], dtype=np.float32)
+        
+        pt_unm = np.array([
+            np.sqrt(p.px**2 + p.py**2) for p in self.particles_unmodified
+        ], dtype=np.float32)
+        
+        # High-pT suppression: ratio of high-pT particles
+        high_pt_threshold = 2.0  # GeV
+        high_pt_ratio_mod = (pt_mod > high_pt_threshold).sum() / len(pt_mod)
+        high_pt_ratio_unm = (pt_unm > high_pt_threshold).sum() / len(pt_unm)
+        
+        if high_pt_ratio_unm > 0.01:
+            suppression = (high_pt_ratio_unm - high_pt_ratio_mod) / high_pt_ratio_unm
+            
+            if suppression > 0.05:
+                strength = min(1.0, suppression / 0.5)
+
+                # Confidence from number of affected particles
+                n_affected = int((pt_mod > high_pt_threshold).sum())
+                confidence = min(1.0, 0.3 + (n_affected / 100.0) * 0.7)
+                
+                sig = CumulativeSignature(
+                    signature_type="spectrum_modification",
+                    strength=strength,
+                    confidence=confidence,
+                    affected_particles=n_affected,
+                    description=f"High-pT suppression (pT>{high_pt_threshold} GeV): {suppression*100:.1f}%"
+                )
+                self.signatures.append(sig)
+    
+    def _detect_forward_backward_asymmetry(self) -> None:
+        """Detect forward-backward asymmetry
+        
+        Cumulative effects often create asymmetry between forward and backward hemispheres.
+        """
+        if not self.particles_modified:
+            return
+        
+        # Calculate pseudorapidity
+        eta = np.array([
+            self._calculate_pseudorapidity(p) for p in self.particles_modified
+        ], dtype=np.float32)
+        
+        # Forward vs backward particles
+        forward_mask = eta > 0
+        backward_mask = eta < 0
+        
+        n_forward = forward_mask.sum()
+        n_backward = backward_mask.sum()
+        n_total = len(eta)
+        
+        if n_total > 20:
+            forward_fraction = n_forward / n_total
+            backward_fraction = n_backward / n_total
+
+            # Expected ~50% in each hemisphere without asymmetry
+            asymmetry = abs(forward_fraction - backward_fraction)
+            
+            if asymmetry > 0.05:
+                strength = min(1.0, asymmetry / 0.3)
+
+                # Confidence from particle count
+                confidence = min(1.0, 0.3 + (n_total / 200.0) * 0.7)
+                
+                sig = CumulativeSignature(
+                    signature_type="forward_backward_asymmetry",
+                    strength=strength,
+                    confidence=confidence,
+                    affected_particles=n_total,
+                    description=f"Forward: {forward_fraction*100:.1f}%, Backward: {backward_fraction*100:.1f}%"
+                )
+                self.signatures.append(sig)
+    
+    def _detect_pt_suppression(self) -> None:
+        """Detect transverse momentum suppression
+        
+        High-pT particles are preferentially suppressed by cumulative interactions.
+        """
+        if not self.particles_modified or not self.particles_unmodified:
+            return
+        
+        pt_mod = np.array([
+            np.sqrt(p.px**2 + p.py**2) for p in self.particles_modified
+        ], dtype=np.float32)
+        
+        pt_unm = np.array([
+            np.sqrt(p.px**2 + p.py**2) for p in self.particles_unmodified
+        ], dtype=np.float32)
+        
+        # Compare high-pT particles in midrapidity region
+        eta_mod = np.array([
+            self._calculate_pseudorapidity(p) for p in self.particles_modified
+        ], dtype=np.float32)
+        
+        eta_unm = np.array([
+            self._calculate_pseudorapidity(p) for p in self.particles_unmodified
+        ], dtype=np.float32)
+        
+        # Select midrapidity
+        mid_mask_mod = np.abs(eta_mod) < 1.0
+        mid_mask_unm = np.abs(eta_unm) < 1.0
+        
+        if mid_mask_mod.sum() > 10 and mid_mask_unm.sum() > 10:
+            # Mean pT in midrapidity
+            mean_pt_mod = np.mean(pt_mod[mid_mask_mod])
+            mean_pt_unm = np.mean(pt_unm[mid_mask_unm])
+            
+            if mean_pt_unm > 0:
+                suppression = (mean_pt_unm - mean_pt_mod) / mean_pt_unm
+                
+                if suppression > 0.03:
+                    strength = min(1.0, suppression / 0.2)
+                    n_affected = int(mid_mask_mod.sum())
+                    confidence = min(1.0, 0.5 + (suppression / 0.2) * 0.5)
+                    
+                    sig = CumulativeSignature(
+                        signature_type="pt_suppression",
+                        strength=strength,
+                        confidence=confidence,
+                        affected_particles=n_affected,
+                        description=f"Midrapidity pT reduction: {suppression*100:.1f}% (|η|<1.0)"
+                    )
+                    self.signatures.append(sig)
+    
+    def _calculate_cumulative_likelihood(self) -> None:
+        """Calculate overall cumulative effect likelihood
+        
+        Combines all detected signatures into single likelihood value.
+        """
+        if not self.signatures:
+            self._cumulative_likelihood = 0.0
+            return
+        
+        # Weight each signature by its strength and confidence
+        weighted_strengths = [
+            sig.strength * sig.confidence for sig in self.signatures
+        ]
+        
+        # Average of weighted signatures, capped at 1.0
+        self._cumulative_likelihood = min(1.0, np.mean(weighted_strengths))
+    
+    def get_cumulative_likelihood(self) -> float:
+        """Get overall likelihood of cumulative effects (0-1)
+        
+        Returns:
+            Likelihood value where 0 = no effects, 1 = strong cumulative effects
+        """
+        return self._cumulative_likelihood
+    
+    def cumulative_candidate_mask(
+        self,
+        pt_min: float = 1.0,
+        y_window: Tuple[float, float] = (-0.5, 0.5),
+    ) -> np.ndarray:
+        """Identify particles likely affected by cumulative scattering
+        
+        High-pT particles in midrapidity are most affected by cumulative effects.
+        
+        Args:
+            pt_min: Minimum transverse momentum (GeV)
+            y_window: Rapidity window (y_min, y_max)
+            
+        Returns:
+            Boolean mask for candidate particles
+        """
+        if not self.particles_modified:
+            return np.array([], dtype=bool)
+        
+        pt_vals = np.array([
+            np.sqrt(p.px**2 + p.py**2) for p in self.particles_modified
+        ], dtype=np.float32)
+        
+        y_vals = np.array([
+            self._calculate_rapidity(p) for p in self.particles_modified
+        ], dtype=np.float32)
+        
+        mask = (pt_vals >= pt_min) & (y_vals >= y_window) & (y_vals <= y_window)
+        return mask
+    
+    def plot_cumulative_candidates(
+        self,
+        out: Optional[str] = None,
+        pt_min: float = 1.0,
+        y_window: Tuple[float, float] = (-0.5, 0.5)
+    ) -> None:
+        """Plot particles identified as cumulative effect candidates
+        
+        Args:
+            out: Output file path
+            pt_min: Minimum pT threshold (GeV)
+            y_window: Rapidity window
+        """
+        mask = self.cumulative_candidate_mask(pt_min, y_window)
+        
+        if not np.any(mask):
+            print(f"[WARNING] No cumulative candidates found (pT>{pt_min}, {y_window}<y<{y_window})")
+            return
+        
+        pt_vals = np.array([
+            np.sqrt(p.px**2 + p.py**2) for p in self.particles_modified
+        ], dtype=np.float32)
+        
+        y_vals = np.array([
+            self._calculate_rapidity(p) for p in self.particles_modified
+        ], dtype=np.float32)
+        
+        # Create plot
+        plt.figure(figsize=(8, 6))
+        plt.scatter(
+            y_vals[mask], pt_vals[mask],
+            s=30, edgecolor="black", facecolor="red", alpha=0.7,
+            label=f"Cumulative candidates (N={mask.sum()})"
+        )
+        
+        # Also show all particles for context
+        plt.scatter(
+            y_vals[~mask], pt_vals[~mask],
+            s=10, edgecolor="gray", facecolor="lightgray", alpha=0.3,
+            label="Other particles"
+        )
+        
+        plt.xlabel("Rapidity y", fontsize=12)
+        plt.ylabel(r"$p_T$ (GeV)", fontsize=12)
+        plt.title(f"Cumulative Effect Candidates\n(pT>{pt_min} GeV, {y_window}<y<{y_window})", fontsize=13)
+        plt.legend(fontsize=11)
+        plt.grid(alpha=0.3)
+        plt.axhline(pt_min, color="red", linestyle="--", linewidth=1, alpha=0.5)
+        plt.tight_layout()
+        
+        if out:
+            Path(out).parent.mkdir(parents=True, exist_ok=True)
+            plt.savefig(out, dpi=300, bbox_inches="tight")
+            print(f"[INFO] Cumulative candidates plot saved to {out}")
+        
+        plt.close()
+    
+    def plot_cumulative_summary(self, out: Optional[str] = None) -> None:
+        """Plot summary of all detected cumulative signatures
+        
+        Args:
+            out: Output file path
+        """
+        if not self.signatures:
+            print("[WARNING] No signatures detected. Run detect_all_signatures() first.")
+            return
+        
+        # Extract data
+        types = [sig.signature_type for sig in self.signatures]
+        strengths = [sig.strength for sig in self.signatures]
+        confidences = [sig.confidence for sig in self.signatures]
+        affected = [sig.affected_particles for sig in self.signatures]
+        
+        # Create figure
+        fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+        fig.suptitle("Cumulative Effects Summary", fontsize=14, fontweight="bold")
+        
+        # 1. Signature strengths
+        ax = axes[0, 0]
+        x = np.arange(len(types))
+        bars = ax.bar(x, strengths, color="steelblue", edgecolor="black", alpha=0.7)
+        ax.set_ylabel("Strength", fontsize=11)
+        ax.set_title("Effect Strength by Type", fontsize=12)
         ax.set_xticks(x)
-        ax.set_xticklabels(sig_names, rotation=15, ha='right')
-        ax.legend()
-        ax.set_ylim(0, 1.1)
-        ax.grid(axis='y', alpha=0.3)
+        ax.set_xticklabels(types, rotation=45, ha="right")
+        ax.set_ylim(0, 1.0)
+        ax.grid(axis="y", alpha=0.3)
         
-        for bars in [bars1, bars2]:
-            for bar in bars:
-                height = bar.get_height()
-                ax.text(bar.get_x() + bar.get_width()/2., height,
-                       f'{height:.2f}', ha='center', va='bottom', fontsize=9)
+        # Add value labels on bars
+        for bar, val in zip(bars, strengths):
+            height = bar.get_height()
+            ax.text(bar.get_x() + bar.get_width()/2., height,
+                   f"{val:.2f}", ha="center", va="bottom", fontsize=9)
         
-        likelihood = self.detector.get_cumulative_likelihood()
-        fig.text(0.99, 0.01, f'Overall Likelihood: {likelihood:.2f}',
-                ha='right', va='bottom', fontsize=11, fontweight='bold',
-                bbox=dict(boxstyle='round', facecolor='yellow', alpha=0.7))
+        # 2. Confidence levels
+        ax = axes[0, 1]
+        bars = ax.bar(x, confidences, color="darkgreen", edgecolor="black", alpha=0.7)
+        ax.set_ylabel("Confidence", fontsize=11)
+        ax.set_title("Detection Confidence by Type", fontsize=12)
+        ax.set_xticks(x)
+        ax.set_xticklabels(types, rotation=45, ha="right")
+        ax.set_ylim(0, 1.0)
+        ax.grid(axis="y", alpha=0.3)
+        
+        # Add value labels
+        for bar, val in zip(bars, confidences):
+            height = bar.get_height()
+            ax.text(bar.get_x() + bar.get_width()/2., height,
+                   f"{val:.2f}", ha="center", va="bottom", fontsize=9)
+        
+        # 3. Affected particles
+        ax = axes[1, 0]
+        bars = ax.bar(x, affected, color="teal", edgecolor="black", alpha=0.7)
+        ax.set_ylabel("Number of Particles", fontsize=11)
+        ax.set_title("Affected Particles by Type", fontsize=12)
+        ax.set_xticks(x)
+        ax.set_xticklabels(types, rotation=45, ha="right")
+        ax.grid(axis="y", alpha=0.3)
+        
+        # Add value labels
+        for bar, val in zip(bars, affected):
+            height = bar.get_height()
+            ax.text(bar.get_x() + bar.get_width()/2., height,
+                   f"{int(val)}", ha="center", va="bottom", fontsize=9)
+        
+        # 4. Overall likelihood
+        ax = axes[1, 1]
+        ax.axis("off")
+        
+        overall_text = f"Overall Cumulative Likelihood: {self.get_cumulative_likelihood():.3f}"
+        ax.text(0.5, 0.7, overall_text, ha="center", va="center", fontsize=14,
+               fontweight="bold", transform=ax.transAxes,
+               bbox=dict(boxstyle="round", facecolor="yellow", alpha=0.7))
+        
+        # Summary text
+        summary_lines = [
+            f"Total signatures detected: {len(self.signatures)}",
+            f"Mean strength: {np.mean(strengths):.3f}",
+            f"Mean confidence: {np.mean(confidences):.3f}",
+            f"Total affected particles: {sum(affected)}",
+        ]
+        
+        summary_text = "\n".join(summary_lines)
+        ax.text(0.5, 0.3, summary_text, ha="center", va="center", fontsize=11,
+               transform=ax.transAxes, family="monospace",
+               bbox=dict(boxstyle="round", facecolor="lightblue", alpha=0.7))
         
         plt.tight_layout()
-        if output_file:
-            plt.savefig(output_file, dpi=300, bbox_inches='tight')
-            print(f"Signatures plot saved to {output_file}")
-        plt.show()
+        
+        if out:
+            Path(out).parent.mkdir(parents=True, exist_ok=True)
+            plt.savefig(out, dpi=300, bbox_inches="tight")
+            print(f"[INFO] Cumulative summary plot saved to {out}")
+        
+        plt.close()
+    
+    # -------- Static helper methods --------
+    
+    @staticmethod
+    def _calculate_polar_angle(particle: Particle) -> float:
+        """Calculate polar angle theta (0 to pi radians)"""
+        pt = np.sqrt(particle.px**2 + particle.py**2)
+        theta = np.arctan2(pt, particle.pz)
+        return theta
+    
+    @staticmethod
+    def _calculate_pseudorapidity(particle: Particle) -> float:
+        """Calculate pseudorapidity eta"""
+        pt = np.sqrt(particle.px**2 + particle.py**2)
+        theta = np.arctan2(pt, particle.pz)
+
+        # Avoid singularity
+        theta = np.clip(theta, 1e-8, np.pi - 1e-8)
+        eta = -np.log(np.tan(theta / 2.0))
+        return eta
+    
+    @staticmethod
+    def _calculate_rapidity(particle: Particle) -> float:
+        """Calculate rapidity y"""
+        E = particle.E
+        pz = particle.pz
+        
+        # Avoid singularity
+        if abs(E - pz) < 1e-8:
+            return 0.0
+        
+        y = 0.5 * np.log((E + pz) / (E - pz))
+        return y

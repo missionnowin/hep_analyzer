@@ -1,9 +1,3 @@
-# readers.py
-# UrQMD Oscar Format Angle Distribution Analyzer
-# Supports both Oscar1992A (f19) and OSC1997A (final_id_p_x) formats
-# Reads Oscar files and generates angle distribution visualizations
-# With multi-file processing and parallel execution support
-
 from pathlib import Path
 import sys
 from typing import List, Optional, Union

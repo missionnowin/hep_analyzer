@@ -1,7 +1,3 @@
-#!/usr/bin/env python3
-# collision_system_detector.py
-# Automatically extract collision parameters from Oscar data
-
 import numpy as np
 from typing import Dict, Tuple
 

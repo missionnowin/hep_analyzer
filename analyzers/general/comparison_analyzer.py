@@ -1,7 +1,3 @@
-#!/usr/bin/env python3
-# comparison_analyzer.py
-# Generate comparison plots between modified vs unmodified for each run
-
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
