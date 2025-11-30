@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-# run_all_analysis.py - MEMORY EFFICIENT
+# run_all_analysis.py - COMPLETE WITH LIVE PROGRESS DISPLAY
 # Unified parallel analysis pipeline for Au+Au 10 GeV
-# WITH BATCH PROCESSING (lower RAM usage) + DETAILED LOGGING
+# WITH BATCH PROCESSING + LIVE MULTI-THREAD PROGRESS DISPLAY
+
 
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from functools import partial
@@ -29,7 +30,7 @@ except ImportError as e:
 class UnifiedAnalysisEngine:
     """
     Single entry point for complete collision analysis pipeline.
-    WITH MEMORY-EFFICIENT BATCH PROCESSING AND AUTO-DETECTED COLLISION SYSTEM.
+    WITH MEMORY-EFFICIENT BATCH PROCESSING AND LIVE PROGRESS DISPLAY.
     """
 
     def __init__(self, data_root: Path, results_root: Path, n_workers: Optional[int] = None, batch_size: int = 500):
@@ -40,9 +41,15 @@ class UnifiedAnalysisEngine:
         self.results = {}
 
 
-    def _process_file_batched(self, file_path: Path, run_name: str, sample_type: str, 
-                             batch_size: int, system_info: Dict = None,
-                             progress_callback=None) -> tuple:
+    def _process_file_batched(
+        self,
+        file_path: Path,
+        run_name: str,
+        sample_type: str,
+        batch_size: int,
+        system_info: Dict = None,
+        progress_callback=None,
+    ) -> tuple:
         """
         Process file in batches to save memory.
         
@@ -104,25 +111,28 @@ class UnifiedAnalysisEngine:
         
         return aggregator, first_event, total_events, system_info
 
-
     @staticmethod
-    def _analyze_single_run(run_num: int, 
-                           data_root: Path, 
-                           results_root: Path,
-                           batch_size: int,
-                           progress_callback=None) -> Dict:
+    def _analyze_single_run(
+        run_num: int,
+        data_root: Path,
+        results_root: Path,
+        batch_size: int,
+        progress_callback=None,
+        lock=None,
+        states=None,
+        total=None
+    ) -> Dict:
         """
         Analyze all events in one run pair (modified + unmodified).
-        WITH SINGLE COLLISION SYSTEM DETECTION.
         """
         run_name = f"run_{run_num}"
         mod_file = data_root / "modified" / f"{run_name}.f19"
         unm_file = data_root / "no_modified" / f"{run_name}.f19"
         
-        def report_progress(stage: str, details: str = ""):
-            """Send progress update via callback."""
+        def report_progress(action: str, progress: str = ""):
+            """Send progress update via callback with run_num."""
             if progress_callback:
-                progress_callback(run_name, stage, details)
+                progress_callback(run_num, action, progress, lock, states, total)
         
         result = {
             'run_num': run_num,
@@ -139,7 +149,6 @@ class UnifiedAnalysisEngine:
         }
 
         try:
-            # 1. Read modified file - DETECT SYSTEM HERE ONCE
             report_progress("Reading modified", "Initializing...")
             
             if not mod_file.exists():
@@ -149,14 +158,12 @@ class UnifiedAnalysisEngine:
 
             engine = UnifiedAnalysisEngine(data_root, results_root, batch_size=batch_size)
             
-            # Detect collision system once (pass None to auto-detect)
             agg_mod, first_event_mod, n_events_mod, system_info = engine._process_file_batched(
                 mod_file, run_name, "modified", batch_size,
-                system_info=None,  # Auto-detect
-                progress_callback=report_progress
+                system_info=None,
+                progress_callback=lambda d: report_progress("Reading modified", d)
             )
             
-            # Store detected system info
             result['system_info'] = system_info
             
             if n_events_mod == 0:
@@ -167,40 +174,36 @@ class UnifiedAnalysisEngine:
             report_progress("Analyzing modified", f"{n_events_mod:,d} events")
             result['general_stats']['modified'] = agg_mod.get_statistics()
 
-            # 2. Read unmodified file - REUSE DETECTED SYSTEM
             agg_unm = None
             first_event_unm = None
             if unm_file.exists():
                 report_progress("Reading unmodified", "Initializing...")
                 
-                # Pass detected system_info to avoid re-detecting
                 agg_unm, first_event_unm, n_events_unm, _ = engine._process_file_batched(
                     unm_file, run_name, "unmodified", batch_size,
-                    system_info=system_info,  # REUSE detected system
-                    progress_callback=report_progress
+                    system_info=system_info,
+                    progress_callback=lambda d: report_progress("Reading unmodified", d)
                 )
                 
                 if n_events_unm > 0:
                     result['general_stats']['unmodified'] = agg_unm.get_statistics()
                     report_progress("Analyzing unmodified", f"{n_events_unm:,d} events")
 
-            # 3. Generate distribution plots
-            report_progress("Plotting modified", "Generating...")
+            report_progress("Plotting modified", "generating...")
             out_dir_mod = results_root / "modified" / run_name
             plots_mod = agg_mod.plot_distributions(out_dir_mod)
             result['plots_generated'].extend([f"modified/{run_name}/{p}" for p in plots_mod])
-            report_progress("Plotting modified", "✓ Done")
+            report_progress("Plotting modified", "✓ done")
 
             if agg_unm:
-                report_progress("Plotting unmodified", "Generating...")
+                report_progress("Plotting unmodified", "generating...")
                 out_dir_unm = results_root / "unmodified" / run_name
                 plots_unm = agg_unm.plot_distributions(out_dir_unm)
                 result['plots_generated'].extend([f"unmodified/{run_name}/{p}" for p in plots_unm])
-                report_progress("Plotting unmodified", "✓ Done")
+                report_progress("Plotting unmodified", "✓ done")
 
-            # 4. Generate comparison plots
             if agg_unm:
-                report_progress("Comparing", "Generating...")
+                report_progress("Comparing", "generating...")
                 comparator = RunComparisonAnalyzer(
                     result['general_stats']['modified'],
                     result['general_stats']['unmodified'],
@@ -209,11 +212,10 @@ class UnifiedAnalysisEngine:
                 out_dir_cmp = results_root / "comparisons" / run_name
                 comparison_plots = comparator.generate_all_comparisons(out_dir_cmp)
                 result['plots_generated'].extend([f"comparisons/{run_name}/{p}" for p in comparison_plots])
-                report_progress("Comparing", "✓ Done")
+                report_progress("Comparing", "✓ done")
 
-            # 5. Cumulative effect detection
             if first_event_mod:
-                report_progress("Detecting cumulative", "Analyzing...")
+                report_progress("Detecting cumulative", "analyzing...")
                 detector = CumulativeEffectDetector(first_event_mod, first_event_unm)
                 detector.detect_all_signatures()
                 cum_likelihood = detector.get_cumulative_likelihood()
@@ -248,8 +250,10 @@ class UnifiedAnalysisEngine:
 
     def run_parallel(self, runs: List[int]) -> Dict:
         """
-        Process all runs in parallel with organized progress display.
+        Process all runs in parallel with live progress display.
         """
+        from utils.progress_display import ProgressDisplay
+        
         print(f"\n{'='*80}")
         print("UNIFIED COLLISION ANALYSIS PIPELINE (AUTO-DETECTED SYSTEM)")
         print(f"{'='*80}")
@@ -259,18 +263,23 @@ class UnifiedAnalysisEngine:
         print("Processing runs in parallel...")
         print("-" * 80)
         
+        # Initialize display and get shared objects
+        lock, states, total = ProgressDisplay.initialize(len(runs))
+        
         start_time = time.time()
         completed_runs = []
         failed_runs = []
         
-        # Parallel execution with static progress callback
         with ProcessPoolExecutor(max_workers=self.n_workers) as executor:
             analyze_func = partial(
                 self._analyze_single_run,
                 data_root=self.data_root,
                 results_root=self.results_root,
                 batch_size=self.batch_size,
-                progress_callback=ProgressDisplay.report  # Static method - picklable!
+                progress_callback=ProgressDisplay.report,
+                lock=lock,
+                states=states,
+                total=total
             )
             
             futures = {
@@ -278,7 +287,6 @@ class UnifiedAnalysisEngine:
                 for run_num in runs
             }
             
-            # Collect results
             result_count = 0
             for future in as_completed(futures):
                 result_count += 1
@@ -293,25 +301,36 @@ class UnifiedAnalysisEngine:
                         
                         if result.get('success', False):
                             completed_runs.append(run_name)
-                            print(f"  [{result_count}/{len(futures)}] ✓ {run_name}", flush=True)
+                            ProgressDisplay.print_to_console(
+                                f"  [{result_count}/{len(futures)}] ✓ {run_name}",
+                                lock, states, total
+                            )
                         else:
                             failed_runs.append(run_name)
                             error_msg = result.get('error', 'Unknown error')
-                            print(f"  [{result_count}/{len(futures)}] ✗ {run_name}: {error_msg}", flush=True)
+                            ProgressDisplay.print_to_console(
+                                f"  [{result_count}/{len(futures)}] ✗ {run_name}: {error_msg}",
+                                lock, states, total
+                            )
                     else:
                         failed_runs.append(f"run_{run_num}")
-                        print(f"  [{result_count}/{len(futures)}] ✗ run_{run_num}: Invalid result", flush=True)
+                        ProgressDisplay.print_to_console(
+                            f"  [{result_count}/{len(futures)}] ✗ run_{run_num}: Invalid result",
+                            lock, states, total
+                        )
                         
                 except Exception as e:
                     failed_runs.append(f"run_{run_num}")
-                    print(f"  [{result_count}/{len(futures)}] ✗ run_{run_num}: {str(e)}", flush=True)
+                    ProgressDisplay.print_to_console(
+                        f"  [{result_count}/{len(futures)}] ✗ run_{run_num}: {str(e)}",
+                        lock, states, total
+                    )
 
         elapsed = time.time() - start_time
         
         print(f"\n{'='*80}")
         self._print_summary(elapsed, completed_runs, failed_runs)
         return self.results
-
 
     def _print_summary(self, elapsed_time: float, completed_runs: List[str], failed_runs: List[str]) -> None:
         """Print analysis summary."""
