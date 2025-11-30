@@ -171,7 +171,7 @@ class UnifiedAnalysisEngine:
             agg_unm = None
             first_event_unm = None
             if unm_file.exists():
-                report_progress("Reading unmodified", "initializing...")
+                report_progress("Reading unmodified", "Initializing...")
                 
                 # Pass detected system_info to avoid re-detecting
                 agg_unm, first_event_unm, n_events_unm, _ = engine._process_file_batched(
@@ -185,22 +185,22 @@ class UnifiedAnalysisEngine:
                     report_progress("Analyzing unmodified", f"{n_events_unm:,d} events")
 
             # 3. Generate distribution plots
-            report_progress("Plotting modified", "generating...")
+            report_progress("Plotting modified", "Generating...")
             out_dir_mod = results_root / "modified" / run_name
             plots_mod = agg_mod.plot_distributions(out_dir_mod)
             result['plots_generated'].extend([f"modified/{run_name}/{p}" for p in plots_mod])
-            report_progress("Plotting modified", "✓ done")
+            report_progress("Plotting modified", "✓ Done")
 
             if agg_unm:
-                report_progress("Plotting unmodified", "generating...")
+                report_progress("Plotting unmodified", "Generating...")
                 out_dir_unm = results_root / "unmodified" / run_name
                 plots_unm = agg_unm.plot_distributions(out_dir_unm)
                 result['plots_generated'].extend([f"unmodified/{run_name}/{p}" for p in plots_unm])
-                report_progress("Plotting unmodified", "✓ done")
+                report_progress("Plotting unmodified", "✓ Done")
 
             # 4. Generate comparison plots
             if agg_unm:
-                report_progress("Comparing", "generating...")
+                report_progress("Comparing", "Generating...")
                 comparator = RunComparisonAnalyzer(
                     result['general_stats']['modified'],
                     result['general_stats']['unmodified'],
@@ -209,11 +209,11 @@ class UnifiedAnalysisEngine:
                 out_dir_cmp = results_root / "comparisons" / run_name
                 comparison_plots = comparator.generate_all_comparisons(out_dir_cmp)
                 result['plots_generated'].extend([f"comparisons/{run_name}/{p}" for p in comparison_plots])
-                report_progress("Comparing", "✓ done")
+                report_progress("Comparing", "✓ Done")
 
             # 5. Cumulative effect detection
             if first_event_mod:
-                report_progress("Detecting cumulative", "analyzing...")
+                report_progress("Detecting cumulative", "Analyzing...")
                 detector = CumulativeEffectDetector(first_event_mod, first_event_unm)
                 detector.detect_all_signatures()
                 cum_likelihood = detector.get_cumulative_likelihood()
