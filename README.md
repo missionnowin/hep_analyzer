@@ -273,12 +273,6 @@ python run_all_analysis.py ... --batch-size 250 --workers 2
 
 ---
 
-## License
-
-MIT License — See LICENSE file
-
----
-
 ## Support
 
 For issues, questions, or contributions, please refer to the documentation directory (`docs/`) or contact the maintainer.
