@@ -116,20 +116,21 @@ class AggregateAnalyzer:
             print(f"[WARNING] No data to plot: pt={len(self.pt_all)}, y={len(self.y_all)}, eta={len(self.eta_all)}")
             return plots
         
-        # pT distribution
+        # pT distribution - AUTO range (no fixed limits)
         try:
             fig, ax = plt.subplots(figsize=(8, 5))
-            pt_data = [p for p in self.pt_all if isinstance(p, (int, float))]
-            ax.hist(pt_data, bins=100, range=(0, 5), color='steelblue', 
-                    edgecolor='black', alpha=0.7, density=True)
-            ax.set_xlabel(r'$p_T$ (GeV)', fontsize=12)
-            ax.set_ylabel('Probability density', fontsize=12)
-            ax.set_title(f'pT Distribution (all events)\n{self.system_label}', fontsize=13)
-            ax.set_yscale('log')
-            ax.grid(alpha=0.3, axis='y')
-            ax.text(0.98, 0.97, f'Events: {self.n_events}\nParticles: {self.n_total_particles}',
-                    transform=ax.transAxes, ha='right', va='top',
-                    bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+            pt_data = [p for p in self.pt_all if isinstance(p, (int, float)) and p > 0]
+            if pt_data:
+                ax.hist(pt_data, bins=150, color='steelblue', 
+                        edgecolor='black', alpha=0.7, density=True)
+                ax.set_xlabel(r'$p_T$ (GeV)', fontsize=12)
+                ax.set_ylabel('Probability density', fontsize=12)
+                ax.set_title(f'pT Distribution (all events, full range)\n{self.system_label}', fontsize=13)
+                ax.set_yscale('log')
+                ax.grid(alpha=0.3, axis='y')
+                ax.text(0.98, 0.97, f'Events: {self.n_events}\nParticles: {self.n_total_particles}',
+                        transform=ax.transAxes, ha='right', va='top',
+                        bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
             plt.tight_layout()
             pt_file = output_dir / "pt_distribution.png"
             plt.savefig(str(pt_file), dpi=300, bbox_inches='tight')
@@ -138,16 +139,18 @@ class AggregateAnalyzer:
         except Exception as e:
             print(f"[ERROR] pT plot failed: {e}")
         
-        # Rapidity distribution
+        # Rapidity distribution - AUTO range (no fixed limits, show tails!)
         try:
             fig, ax = plt.subplots(figsize=(8, 5))
-            valid_y = [y for y in self.y_all if isinstance(y, (int, float)) and -10 < y < 10]
-            ax.hist(valid_y, bins=80, range=(-2, 2), color='darkgreen', 
-                    edgecolor='black', alpha=0.7, density=True)
-            ax.set_xlabel('Rapidity y', fontsize=12)
-            ax.set_ylabel('Probability density', fontsize=12)
-            ax.set_title(f'Rapidity Distribution (all events)\n{self.system_label}', fontsize=13)
-            ax.grid(alpha=0.3, axis='y')
+            valid_y = [y for y in self.y_all if isinstance(y, (int, float))]
+            if valid_y:
+                ax.hist(valid_y, bins=150, color='darkgreen', 
+                        edgecolor='black', alpha=0.7, density=True)
+                ax.set_xlabel('Rapidity y', fontsize=12)
+                ax.set_ylabel('Probability density', fontsize=12)
+                ax.set_title(f'Rapidity Distribution (all events, full range)\n{self.system_label}', fontsize=13)
+                ax.set_yscale('log')
+                ax.grid(alpha=0.3, axis='y')
             plt.tight_layout()
             y_file = output_dir / "rapidity_distribution.png"
             plt.savefig(str(y_file), dpi=300, bbox_inches='tight')
@@ -156,16 +159,18 @@ class AggregateAnalyzer:
         except Exception as e:
             print(f"[ERROR] Rapidity plot failed: {e}")
         
-        # Pseudorapidity distribution
+        # Pseudorapidity distribution - AUTO range
         try:
             fig, ax = plt.subplots(figsize=(8, 5))
             eta_data = [e for e in self.eta_all if isinstance(e, (int, float))]
-            ax.hist(eta_data, bins=80, range=(-4, 4), color='purple', 
-                    edgecolor='black', alpha=0.7, density=True)
-            ax.set_xlabel('Pseudorapidity η', fontsize=12)
-            ax.set_ylabel('Probability density', fontsize=12)
-            ax.set_title(f'Pseudorapidity Distribution (all events)\n{self.system_label}', fontsize=13)
-            ax.grid(alpha=0.3, axis='y')
+            if eta_data:
+                ax.hist(eta_data, bins=150, color='purple', 
+                        edgecolor='black', alpha=0.7, density=True)
+                ax.set_xlabel('Pseudorapidity η', fontsize=12)
+                ax.set_ylabel('Probability density', fontsize=12)
+                ax.set_title(f'Pseudorapidity Distribution (all events, full range)\n{self.system_label}', fontsize=13)
+                ax.set_yscale('log')
+                ax.grid(alpha=0.3, axis='y')
             plt.tight_layout()
             eta_file = output_dir / "eta_distribution.png"
             plt.savefig(str(eta_file), dpi=300, bbox_inches='tight')
@@ -174,22 +179,19 @@ class AggregateAnalyzer:
         except Exception as e:
             print(f"[ERROR] Pseudorapidity plot failed: {e}")
         
-        # 2D correlation: y vs pT (PAIRED - same length!)
+        # 2D correlation: y vs pT - AUTO range
         try:
             fig, ax = plt.subplots(figsize=(8, 6))
-            # Filter PAIRED data - keep only where both y and pT are valid
             valid_pairs = [
                 (y, p) for y, p in zip(self.y_all, self.pt_all) 
-                if isinstance(y, (int, float)) and isinstance(p, (int, float)) 
-                   and -2 < y < 2 and 0 < p < 4
+                if isinstance(y, (int, float)) and isinstance(p, (int, float)) and p > 0
             ]
             if len(valid_pairs) > 10:
                 y_data, pt_data = zip(*valid_pairs)
-                h = ax.hist2d(y_data, pt_data, bins=[60, 80],
-                              range=[[-2, 2], [0, 4]], cmap='viridis')
+                h = ax.hist2d(y_data, pt_data, bins=[100, 100], cmap='viridis')
                 ax.set_xlabel('Rapidity y', fontsize=12)
                 ax.set_ylabel(r'$p_T$ (GeV)', fontsize=12)
-                ax.set_title(f'2D: y vs pT (all events)\n{self.system_label}', fontsize=13)
+                ax.set_title(f'2D: y vs pT (all events, full range)\n{self.system_label}', fontsize=13)
                 cbar = plt.colorbar(h[3], ax=ax)
                 cbar.set_label('Counts')
             plt.tight_layout()
@@ -200,22 +202,19 @@ class AggregateAnalyzer:
         except Exception as e:
             print(f"[ERROR] y vs pT plot failed: {e}")
         
-        # 2D correlation: η vs φ (PAIRED - same length!)
+        # 2D correlation: η vs φ - AUTO range
         try:
             fig, ax = plt.subplots(figsize=(8, 6))
-            # Filter PAIRED data - keep only where both eta and phi are valid
             valid_pairs = [
                 (e, np.degrees(p)) for e, p in zip(self.eta_all, self.phi_all)
                 if isinstance(e, (int, float)) and isinstance(p, (int, float))
-                   and -4 < e < 4 and 0 < np.degrees(p) < 360
             ]
             if len(valid_pairs) > 10:
                 eta_data, phi_data = zip(*valid_pairs)
-                h = ax.hist2d(eta_data, phi_data, bins=[80, 72],
-                              range=[[-4, 4], [0, 360]], cmap='plasma')
+                h = ax.hist2d(eta_data, phi_data, bins=[100, 100], cmap='plasma')
                 ax.set_xlabel('Pseudorapidity η', fontsize=12)
                 ax.set_ylabel('Azimuthal angle φ (degrees)', fontsize=12)
-                ax.set_title(f'2D: η vs φ (all events)\n{self.system_label}', fontsize=13)
+                ax.set_title(f'2D: η vs φ (all events, full range)\n{self.system_label}', fontsize=13)
                 cbar = plt.colorbar(h[3], ax=ax)
                 cbar.set_label('Counts')
             plt.tight_layout()
