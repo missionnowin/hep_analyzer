@@ -742,7 +742,7 @@ def main():
     engine.generate_report()
     
     print("\n" + "="*80)
-    print(f"ANALYSIS COMPLETE ({args.mode.upper()} Mode")
+    print(f"ANALYSIS COMPLETE ({args.mode.upper()} Mode)")
     print("="*80)
     print(f"Results: {args.results_root}\n")
 
