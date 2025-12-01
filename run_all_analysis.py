@@ -452,18 +452,73 @@ class UnifiedAnalysisEngine:
         return report_path
 
 
+def auto_detect_runs(data_root: Path) -> List[int]:
+    """
+    Auto-detect available run numbers from data directory.
+    Looks for run_N.f19 files in modified/ subdirectory.
+    
+    Args:
+        data_root: Root data directory
+        
+    Returns:
+        List of run numbers found, sorted
+    """
+    modified_dir = data_root / "modified"
+    
+    if not modified_dir.exists():
+        print(f"Warning: {modified_dir} not found. Using default runs [1,2,3,4,5]")
+        return [1, 2, 3, 4, 5]
+    
+    # Find all run_N.f19 files
+    run_files = sorted(modified_dir.glob("run_*.f19"))
+    
+    if not run_files:
+        print(f"Warning: No run_*.f19 files found in {modified_dir}. Using default runs [1,2,3,4,5]")
+        return [1, 2, 3, 4, 5]
+    
+    # Extract run numbers
+    runs = []
+    for f in run_files:
+        try:
+            # Extract number from "run_N.f19"
+            run_num = int(f.stem.split('_')[1])
+            runs.append(run_num)
+        except (IndexError, ValueError):
+            pass
+    
+    if runs:
+        print(f"✓ Auto-detected {len(runs)} runs: {runs}")
+        return sorted(runs)
+    else:
+        print(f"Warning: Could not parse run numbers. Using default runs [1,2,3,4,5]")
+        return [1, 2, 3, 4, 5]
+
+
 def main():
+    """Main entry point."""
     parser = argparse.ArgumentParser(
         description='Unified collision analysis pipeline'
     )
     
-    parser.add_argument('--data-root', type=Path, default=Path('data'))
-    parser.add_argument('--results-root', type=Path, default=Path('results'))
-    parser.add_argument('--runs', nargs='+', type=int, default=[1, 2, 3, 4, 5])
-    parser.add_argument('--workers', type=int, default=1)
-    parser.add_argument('--batch-size', type=int, default=500)
+    parser.add_argument('--data-root', type=Path, default=Path('data'),
+                        help='Root directory containing modified/no_modified subdirectories')
+    parser.add_argument('--results-root', type=Path, default=Path('results_integrated'),
+                        help='Output directory for results')
+    parser.add_argument('--runs', nargs='*', type=int,
+                        help='Run numbers to process (auto-detected from run_*.f19 files if not specified)')
+    parser.add_argument('--workers', type=int, default=1,
+                        help='Number of parallel workers')
+    parser.add_argument('--batch-size', type=int, default=50,
+                        help='Events per batch')
     
     args = parser.parse_args()
+    
+    # Auto-detect runs if not explicitly specified
+    if args.runs is None or len(args.runs) == 0:
+        print("Auto-detecting run files from data directory...")
+        args.runs = auto_detect_runs(args.data_root)
+    else:
+        print(f"✓ Using specified runs: {args.runs}")
     
     args.results_root.mkdir(parents=True, exist_ok=True)
     (args.results_root / "modified").mkdir(exist_ok=True)
