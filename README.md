@@ -1,10 +1,10 @@
 # High-Energy Physics Collision Analysis Pipeline
 
-Analysis framework for nuclear collisions using Oscar format event generators.
+Analysis framework for nuclear collisions using Oscar, HepMC and PHQMD formats.
 
 ## Overview
 
-This project analyzes modified vs. unmodified particle collision events to identify and quantify cumulative scattering signatures. It processes Oscar format output files (Oscar1992A and OSC1997A) in parallel, extracts physics observables, and generates publication-quality comparisons.
+This project analyzes modified vs. unmodified particle collision events to identify and quantify cumulative scattering signatures. It processes Oscar format output files (Oscar1992A and OSC1997A), .dat for PHQMD and HepMC in parallel, extracts physics observables, and generates publication-quality comparisons.
 
 ### Key Features
 
