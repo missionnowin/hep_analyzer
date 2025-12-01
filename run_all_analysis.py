@@ -53,7 +53,7 @@ class UnifiedAnalysisEngine:
         batch_size: int,
         system_info: Dict = None,
         progress_callback=None,
-    ) -> Tuple:
+    ) -> Tuple[AggregateAnalyzer, int, Dict]:
         """
         Process a single file for analysis.
         
@@ -108,7 +108,7 @@ class UnifiedAnalysisEngine:
         batch_size: int,
         system_info: Dict = None,
         progress_callback=None,
-    ) -> Tuple[AggregateAnalyzer, AggregateAnalyzer, CumulativeAnalyzer, List[CumulativeSignature], int, Dict]:
+    ) -> Tuple[AggregateAnalyzer, AggregateAnalyzer, CumulativeAnalyzer, int, Dict]:
         """
         Process modified and unmodified files in parallel batches (comparison mode).
         
@@ -146,6 +146,7 @@ class UnifiedAnalysisEngine:
         cumulative_analyzer = CumulativeAnalyzer(
             threshold_strength=0.01,       # 1% excess = 1% flucton fraction
             threshold_confidence=0.05,     # Moderate confidence for subtle effects
+            threshold_absolute_excess=0
         )
         
         # Stream batches from both files
@@ -179,15 +180,7 @@ class UnifiedAnalysisEngine:
             if progress_callback:
                 progress_callback(f"Processed {total_events:6d} event pairs")
         
-        cumulative_signatures = cumulative_analyzer.get_signatures()
-        
-        if progress_callback:
-            progress_callback(
-                f"Completed: {total_events:6d} event pairs, "
-                f"{len(cumulative_signatures)} signatures detected"
-            )
-        
-        return (agg_mod, agg_unm, cumulative_analyzer, cumulative_signatures, total_events, system_info)
+        return (agg_mod, agg_unm, cumulative_analyzer, total_events, system_info)
 
     @staticmethod
     def _analyze_single_run_comparison(
@@ -232,7 +225,7 @@ class UnifiedAnalysisEngine:
             # Process files with batch streaming
             engine: UnifiedAnalysisEngine = UnifiedAnalysisEngine(data_root, results_root, run_mode="comparison", batch_size=batch_size)
             
-            agg_mod, agg_unm, cumulative_analyzer, cumulative_sigs, n_events, system_info = \
+            agg_mod, agg_unm, cumulative_analyzer, n_events, system_info = \
                 engine._process_files_parallel(
                     mod_file, unm_file, run_name, batch_size,
                     system_info=None,
@@ -271,7 +264,10 @@ class UnifiedAnalysisEngine:
             out_dir_cum = results_root / "cumulative" / run_name
             out_dir_cum.mkdir(parents=True, exist_ok=True)
             cumulative_analyzer.plot_distributions(out_dir_cum)
+            stats_cumulative, cumulative_sigs = cumulative_analyzer.get_statistics()
             report_progress("Plotting cumulative", "done")
+            del cumulative_analyzer
+            gc.collect()
 
             # 4. Compare
             report_progress("Comparing", "Generating...")
@@ -321,11 +317,11 @@ class UnifiedAnalysisEngine:
                     'run_name': run_name,
                     'modified': stats_mod,
                     'unmodified': stats_unm,
-                    'cumulative': cumulative_analyzer.get_statistics()
+                    'cumulative': stats_cumulative
                 }, f, indent=2, default=str)
             
             report_progress("Saving", "done")
-            del cumulative_sigs, cumulative_signatures, cumulative_analysis, cumulative_analyzer, stats_mod, stats_unm
+            del cumulative_sigs, cumulative_signatures, cumulative_analysis, stats_mod, stats_unm
             gc.collect()
 
             result['success'] = True
