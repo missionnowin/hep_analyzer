@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import json
 import sys
@@ -104,7 +106,7 @@ class UnifiedAnalysisEngine:
                 f"{len(cumulative_signatures)} signatures detected"
             )
         
-        return (agg_mod, agg_unm, cumulative_signatures, total_events, system_info)
+        return (agg_mod, agg_unm, cumulative_analyzer, cumulative_signatures, total_events, system_info)
 
     @staticmethod
     def _analyze_single_run(
@@ -149,7 +151,7 @@ class UnifiedAnalysisEngine:
             # Process files with batch streaming
             engine = UnifiedAnalysisEngine(data_root, results_root, batch_size=batch_size)
             
-            agg_mod, agg_unm, cumulative_sigs, n_events, system_info = \
+            agg_mod, agg_unm, cumulative_analyzer, cumulative_sigs, n_events, system_info = \
                 engine._process_files_parallel(
                     mod_file, unm_file, run_name, batch_size,
                     system_info=None,
@@ -162,30 +164,45 @@ class UnifiedAnalysisEngine:
                 return result
             
             report_progress("Analyzing", f"{n_events:,d} event pairs")
-            
-            stats_mod = agg_mod.get_statistics()
-            stats_unm = agg_unm.get_statistics()
-
             # Generate plots for modified dataset
             report_progress("Plotting modified", "Generating...")
             out_dir_mod = results_root / "modified" / run_name
             out_dir_mod.mkdir(parents=True, exist_ok=True)
             agg_mod.plot_distributions(out_dir_mod)
+            stats_mod = agg_mod.get_statistics()
+            
+            del agg_mod
+            gc.collect()
             report_progress("Plotting modified", "done")
 
-            # Generate plots for unmodified dataset
+            # Process Unmodified
             report_progress("Plotting unmodified", "Generating...")
             out_dir_unm = results_root / "unmodified" / run_name
             out_dir_unm.mkdir(parents=True, exist_ok=True)
             agg_unm.plot_distributions(out_dir_unm)
+            stats_unm = agg_unm.get_statistics()
+
+            del agg_unm
+            gc.collect()
             report_progress("Plotting unmodified", "done")
 
-            # Generate comparison plots
+            # Plot cumulative analysis results
+            report_progress("Plotting cumulative", "Generating...")
+            out_dir_cum = results_root / "cumulative" / run_name
+            out_dir_cum.mkdir(parents=True, exist_ok=True)
+            cumulative_analyzer.plot_distributions(out_dir_cum)
+            report_progress("Plotting cumulative", "done")
+
+            # Compare (Using only lightweight stats)
             report_progress("Comparing", "Generating...")
             comparator = RunComparisonAnalyzer(stats_mod, stats_unm, run_name)
             out_dir_cmp = results_root / "comparisons" / run_name
             out_dir_cmp.mkdir(parents=True, exist_ok=True)
             comparator.generate_all_comparisons(out_dir_cmp)
+            
+            # Free comparator
+            del comparator
+            gc.collect()
             report_progress("Comparing", "done")
 
             # Save analysis results to JSON
@@ -225,20 +242,19 @@ class UnifiedAnalysisEngine:
                 json.dump({
                     'run_name': run_name,
                     'modified': stats_mod,
-                    'unmodified': stats_unm
+                    'unmodified': stats_unm,
+                    'cumulative': cumulative_analyzer.get_statistics()
                 }, f, indent=2, default=str)
             
             report_progress("Saving", "done")
 
-            # Clean up large objects
-            del agg_mod
-            del agg_unm
+            # Clean up remaining objects
             del cumulative_sigs
             del cumulative_signatures
             del cumulative_analysis
+            del cumulative_analyzer
             del stats_mod
             del stats_unm
-            del comparator
             gc.collect()
 
             result['success'] = True
