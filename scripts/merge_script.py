@@ -49,4 +49,4 @@ files_to_merge_unmod = [
     Path("data/no_modified/run_10.f19"),
 ]
 merge_oscar_files(files_to_merge_mod, Path("data/modified/run_combined.f19"))
-merge_oscar_files(files_to_merge_mod, Path("data/no_modified/run_combined.f19"))
+merge_oscar_files(files_to_merge_unmod, Path("data/no_modified/run_combined.f19"))
