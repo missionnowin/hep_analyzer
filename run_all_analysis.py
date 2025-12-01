@@ -29,6 +29,7 @@ class UnifiedAnalysisEngine:
         self.n_workers = n_workers or mp.cpu_count()
         self.batch_size = batch_size
 
+
     def _process_files_parallel(
         self,
         file_mod: Path,
@@ -107,6 +108,7 @@ class UnifiedAnalysisEngine:
             )
         
         return (agg_mod, agg_unm, cumulative_analyzer, cumulative_signatures, total_events, system_info)
+
 
     @staticmethod
     def _analyze_single_run(
@@ -269,6 +271,7 @@ class UnifiedAnalysisEngine:
 
         return result
 
+
     def run_parallel(self, runs: List[int]) -> None:
         print(f"\n{'='*80}")
         print("UNIFIED COLLISION ANALYSIS PIPELINE")
@@ -371,6 +374,7 @@ class UnifiedAnalysisEngine:
         print(f"Summary: {summary_path}")
         return summary_path
 
+
     def create_cross_run_comparison_plots(self) -> List[Path]:
         plot_paths = []
         cumulative_dir = self.results_root / "cumulative"
@@ -414,6 +418,7 @@ class UnifiedAnalysisEngine:
             print(f"Error creating plots: {e}")
         
         return plot_paths
+    
 
     def generate_report(self) -> Path:
         report_path = self.results_root / "ANALYSIS_REPORT.txt"
