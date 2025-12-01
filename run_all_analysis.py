@@ -10,13 +10,15 @@ import multiprocessing as mp
 import argparse
 import gc
 
+
 try:
     from analyzers.general.comparison_analyzer import RunComparisonAnalyzer
     from utils.collision_system_detector import CollisionSystemDetector
     from analyzers.general.aggregate_analyzer import AggregateAnalyzer
     from utils.progress_display import ProgressDisplay
     from analyzers.cumulative.cumulative_analyzer import CumulativeAnalyzer
-    from utils.readers import OscarReader
+    from utils.readers.multi_format_detector import MultiFormatReader
+    from utils.readers.reader import ReaderBase
 except ImportError as e:
     print(f"Error importing modules: {e}")
     sys.exit(1)
@@ -30,17 +32,17 @@ class UnifiedAnalysisEngine:
     - Dual mode: comparison (modified/unmodified) or single (single files)
     - Batch streaming to minimize memory footprint
     - Parallel processing with ProcessPoolExecutor
-    - Thread-safe matplotlib memory management
     - Automatic cleanup after each phase
     """
     
     def __init__(self, data_root: Path, results_root: Path, run_mode: str = "comparison", 
-                 n_workers: Optional[int] = None, batch_size: int = 50):
+                 file_format: str = 'oscar', n_workers: Optional[int] = None, batch_size: int = 50):
         self.data_root = Path(data_root)
         self.results_root = Path(results_root)
         self.run_mode = run_mode  # 'comparison' or 'single'
         self.n_workers = n_workers or mp.cpu_count()
         self.batch_size = batch_size
+        self.file_format = file_format
 
     def _process_single_file(
         self,
@@ -59,7 +61,7 @@ class UnifiedAnalysisEngine:
         # Detect collision system from file if not provided
         if system_info is None:
             system_info = CollisionSystemDetector.detect_from_file(
-                str(file_path), n_events_sample=10
+                str(file_path), n_events_sample=10, file_format=self.file_format
             )
             if not system_info:
                 system_info = {}
@@ -81,7 +83,7 @@ class UnifiedAnalysisEngine:
         )
         
         # Stream batches from file
-        reader = OscarReader(str(file_path))
+        reader: ReaderBase = MultiFormatReader.open(file_path, self.file_format) 
         
         total_events = 0
         
@@ -131,7 +133,7 @@ class UnifiedAnalysisEngine:
         # Detect collision system from file if not provided
         if system_info is None:
             system_info = CollisionSystemDetector.detect_from_file(
-                str(file_mod), n_events_sample=10
+                str(file_mod), n_events_sample=10, file_format=self.file_format
             )
             if not system_info:
                 system_info = {}
@@ -163,8 +165,8 @@ class UnifiedAnalysisEngine:
         )
         
         # Stream batches from both files
-        reader_mod = OscarReader(str(file_mod))
-        reader_unm = OscarReader(str(file_unm))
+        reader_mod: ReaderBase = MultiFormatReader.open(str(file_mod), self.file_format)
+        reader_unm: ReaderBase = MultiFormatReader.open(str(file_unm), self.file_format)
         
         total_events = 0
         
@@ -424,11 +426,10 @@ class UnifiedAnalysisEngine:
                     'run_name': run_name,
                     'total_events': int(n_events),
                     'statistics': stats,
-                    'cumulative': cumulative_analyzer.get_statistics()
                 }, f, indent=2, default=str)
             
             report_progress("Saving", "done")
-            del cumulative_sigs, cumulative_signatures, cumulative_analysis, cumulative_analyzer, stats
+            del stats
             gc.collect()
 
             result['success'] = True
@@ -694,6 +695,8 @@ def main():
                         help='Output directory for results')
     parser.add_argument('--mode', type=str, choices=['comparison', 'single'], default='comparison',
                         help='Analysis mode: comparison (modified/unmodified) or single (single files)')
+    parser.add_argument('--format', type=str, choices=['oscar', 'hepmc', 'phqmd', 'auto'], default='auto',
+                        help='File format: oscar (.f19), hepmc (.hepmc), phqmd (.phsd.dat), or auto-detect')
     parser.add_argument('--runs', nargs='*', type=int,
                         help='Run numbers to process (auto-detected if not specified)')
     parser.add_argument('--workers', type=int, default=1,
@@ -728,6 +731,7 @@ def main():
         data_root=args.data_root,
         results_root=args.results_root,
         run_mode=args.mode,
+        file_format=args.format,
         n_workers=args.workers,
         batch_size=args.batch_size
     )
@@ -738,7 +742,7 @@ def main():
     engine.generate_report()
     
     print("\n" + "="*80)
-    print(f"ANALYSIS COMPLETE ({args.mode.upper()} Mode, Thread-Safe, Memory Optimized)")
+    print(f"ANALYSIS COMPLETE ({args.mode.upper()} Mode")
     print("="*80)
     print(f"Results: {args.results_root}\n")
 

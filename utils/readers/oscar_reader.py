@@ -1,10 +1,11 @@
 from pathlib import Path
 import sys
-from typing import List, Optional, Union, Generator
+from typing import List, Optional, Union, Generator, override
 from enum import Enum
 
 try:
     from models.particle import Particle
+    from utils.readers.reader import ReaderBase
 except ImportError as e:
     print(f"Error importing modules: {e}")
     sys.exit(1)
@@ -164,8 +165,9 @@ class OSC1997AReader:
                         batch = []
 
 
-class OscarReader:
+class OscarReader(ReaderBase):
     """Universal Oscar reader - auto-detects format and parses accordingly"""
+    @override
     def __init__(self, filepath: str, format_type: Optional[OscarFormat] = None):
         self.filepath = Path(filepath)
         self.format_type = format_type or OscarFormatDetector.detect_format(str(filepath))
@@ -177,5 +179,6 @@ class OscarReader:
         else:
             return OSC1997AReader(str(self.filepath))
     
+    @override
     def stream_batch(self, batch_size: int) -> Generator[List[List[Particle]], None, None]:
         return self._reader.stream_batch(batch_size)

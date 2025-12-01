@@ -4,7 +4,7 @@ from typing import Dict, Tuple
 
 class CollisionSystemDetector:
     @staticmethod
-    def detect_from_file(file_path: str, n_events_sample: int = 100) -> Dict:
+    def detect_from_file(file_path: str, n_events_sample: int = 100, file_format: str = None) -> Dict:
         """
         Analyze first N events to infer collision parameters.
         
@@ -20,12 +20,13 @@ class CollisionSystemDetector:
             }
         """
         try:
-            from utils.readers import OscarReader
-        except ImportError:
-            print("Error: Cannot import OscarReader")
-            return None
+            from utils.readers.multi_format_detector import MultiFormatReader
+            from utils.readers.reader import ReaderBase
+        except ImportError as e:
+            print(f"Error importing modules: {e}")
+            sys.exit(1)
         
-        reader = OscarReader(file_path)
+        reader: ReaderBase = MultiFormatReader.open(file_path, file_format) 
         
         total_particles = 0
         charge_counts = {}
