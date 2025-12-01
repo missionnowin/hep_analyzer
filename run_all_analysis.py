@@ -10,6 +10,8 @@ import multiprocessing as mp
 import argparse
 import gc
 
+from models.cumulative_singnature import CumulativeSignature
+
 
 try:
     from analyzers.general.comparison_analyzer import RunComparisonAnalyzer
@@ -56,7 +58,7 @@ class UnifiedAnalysisEngine:
         Process a single file for analysis.
         
         Returns:
-            Tuple of (agg, cumulative_analyzer, cumulative_signatures, total_events, system_info)
+            Tuple of (agg, cumulative_signatures, total_events, system_info)
         """
         # Detect collision system from file if not provided
         if system_info is None:
@@ -76,12 +78,6 @@ class UnifiedAnalysisEngine:
             Z2=system_info.get('Z2')
         )
         
-        cumulative_analyzer = CumulativeAnalyzer(
-            threshold_strength=0.01,       # 1% excess = 1% flucton fraction
-            threshold_confidence=0.05,     # Moderate confidence for subtle effects
-            threshold_absolute_excess=0    # Disabled - works with any dataset size
-        )
-        
         # Stream batches from file
         reader: ReaderBase = MultiFormatReader.open(file_path, self.file_format) 
         
@@ -93,9 +89,6 @@ class UnifiedAnalysisEngine:
             for event_particles in batch:
                 agg.accumulate_event(event_particles)
             
-            # Analyze cumulative effects
-            cumulative_analyzer.process_batch(batch, [])
-            
             total_events += len(batch)
             
             # Clear batch from memory immediately
@@ -105,15 +98,7 @@ class UnifiedAnalysisEngine:
             if progress_callback:
                 progress_callback(f"Processed {total_events:6d} events")
         
-        cumulative_signatures = cumulative_analyzer.get_signatures()
-        
-        if progress_callback:
-            progress_callback(
-                f"Completed: {total_events:6d} events, "
-                f"{len(cumulative_signatures)} signatures detected"
-            )
-        
-        return (agg, cumulative_analyzer, cumulative_signatures, total_events, system_info)
+        return (agg, total_events, system_info)
 
     def _process_files_parallel(
         self,
@@ -123,7 +108,7 @@ class UnifiedAnalysisEngine:
         batch_size: int,
         system_info: Dict = None,
         progress_callback=None,
-    ) -> Tuple:
+    ) -> Tuple[AggregateAnalyzer, AggregateAnalyzer, CumulativeAnalyzer, List[CumulativeSignature], int, Dict]:
         """
         Process modified and unmodified files in parallel batches (comparison mode).
         
@@ -161,7 +146,6 @@ class UnifiedAnalysisEngine:
         cumulative_analyzer = CumulativeAnalyzer(
             threshold_strength=0.01,       # 1% excess = 1% flucton fraction
             threshold_confidence=0.05,     # Moderate confidence for subtle effects
-            threshold_absolute_excess=0    # Disabled - works with any dataset size
         )
         
         # Stream batches from both files
@@ -246,7 +230,7 @@ class UnifiedAnalysisEngine:
                 return result
             
             # Process files with batch streaming
-            engine = UnifiedAnalysisEngine(data_root, results_root, run_mode="comparison", batch_size=batch_size)
+            engine: UnifiedAnalysisEngine = UnifiedAnalysisEngine(data_root, results_root, run_mode="comparison", batch_size=batch_size)
             
             agg_mod, agg_unm, cumulative_analyzer, cumulative_sigs, n_events, system_info = \
                 engine._process_files_parallel(
@@ -393,7 +377,7 @@ class UnifiedAnalysisEngine:
             # Process file
             engine = UnifiedAnalysisEngine(data_root, results_root, run_mode="single", batch_size=batch_size)
             
-            agg, cumulative_analyzer, cumulative_sigs, n_events, system_info = \
+            agg, n_events, system_info = \
                 engine._process_single_file(
                     file_path, run_name, batch_size,
                     system_info=None,
