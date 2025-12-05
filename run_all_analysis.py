@@ -17,8 +17,8 @@ try:
     from analyzers.general.aggregate_analyzer import AggregateAnalyzer
     from utils.progress_display import ProgressDisplay
     from analyzers.cumulative.cumulative_analyzer import CumulativeAnalyzer
-    from utils.readers.multi_format_detector import MultiFormatReader
-    from utils.readers.reader import ReaderBase
+    from readers.multi_format_detector import MultiFormatReader
+    from readers.reader import ReaderBase
 except ImportError as e:
     print(f"Error importing modules: {e}")
     sys.exit(1)

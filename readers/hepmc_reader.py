@@ -3,7 +3,7 @@ from typing import Iterator, List, override
 
 try:
     from models.particle import Particle
-    from utils.readers.reader import ReaderBase
+    from readers.reader import ReaderBase
 except ImportError as e:
     print(f"Error importing modules: {e}")
     sys.exit(1)

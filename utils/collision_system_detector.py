@@ -5,9 +5,9 @@ from typing import Dict
 try:
     from models.ions import CollisionSystem
     from models.file_format import FileFormat
-    from utils.parsers.hepmc_parser import HepMCParser
-    from utils.parsers.phqmd_parser import PHQMDParser
-    from utils.parsers.urqmd_parser import UrQMDParser
+    from parsers.hepmc_parser import HepMCParser
+    from parsers.phqmd_parser import PHQMDParser
+    from parsers.urqmd_parser import UrQMDParser
 except ImportError as e:
     print(f"Error importing modules: {e}")
     sys.exit(1)

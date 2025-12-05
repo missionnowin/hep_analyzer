@@ -9,8 +9,8 @@ import numpy as np
 import sys
 
 try:
-    from utils.readers.reader import ReaderBase
-    from utils.readers.multi_format_detector import MultiFormatReader
+    from readers.reader import ReaderBase
+    from readers.multi_format_detector import MultiFormatReader
 except ImportError:
     print("Error: Cannot import OscarReader")
     sys.exit(1)

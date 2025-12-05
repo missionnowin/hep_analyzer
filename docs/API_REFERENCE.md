@@ -61,7 +61,7 @@ class CumulativeSignature:
 
 ## Utilities
 
-### `utils.readers.OscarReader`
+### `readers.OscarReader`
 
 Universal Oscar format reader with automatic format detection.
 
@@ -96,7 +96,7 @@ batch: List[List[Particle]]
 #### Example
 
 ```python
-from utils.readers import OscarReader
+from readers import OscarReader
 
 reader = OscarReader("collision.f19")
 for batch in reader.stream_batch(batch_size=500):
@@ -250,7 +250,7 @@ Returns aggregate statistics:
 
 ```python
 from analyzers.general.aggregate_analyzer import AggregateAnalyzer
-from utils.readers import OscarReader
+from readers import OscarReader
 
 analyzer = AggregateAnalyzer(system_label="Au+Au", sqrt_s_NN=10.0)
 reader = OscarReader("events.f19")

@@ -50,7 +50,7 @@ Analysis Pipeline Architecture
 ```
 run_all_analysis.py (main entry)
     ├─ UnifiedAnalysisEngine
-    │   ├─ OscarReader (utils.readers)
+    │   ├─ OscarReader (readers)
     │   ├─ AggregateAnalyzer (analyzers.general)
     │   ├─ CumulativeAnalyzer (analyzers.cumulative)
     │   ├─ ComparisonAnalyzer (analyzers.general)
@@ -68,7 +68,7 @@ Particle (models.particle)
 CumulativeSignature (models.cumulative_signature)
     └─ @dataclass
 
-OscarReader (utils.readers)
+OscarReader (readers)
     ├─ OscarFormatDetector.detect_format()
     ├─ Oscar1992AReader.stream_batch()
     ├─ OSC1997AReader.stream_batch()

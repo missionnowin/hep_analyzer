@@ -89,7 +89,7 @@ final_id px py pz E mass x y z t_formed
 
 **Usage**:
 ```python
-from utils.readers import OscarReader
+from readers import OscarReader
 
 reader = OscarReader("path/to/file.f19")
 for batch in reader.stream_batch(batch_size=500):

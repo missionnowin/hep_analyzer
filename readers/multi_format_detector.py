@@ -4,10 +4,10 @@ from typing import Optional, Tuple
 
 
 try:
-    from utils.readers.oscar_reader import OscarReader
-    from utils.readers.hepmc_reader import HepMCReader
-    from utils.readers.phqmd_reader import PHQMDReader
-    from utils.readers.reader import ReaderBase
+    from readers.oscar_reader import OscarReader
+    from readers.hepmc_reader import HepMCReader
+    from readers.phqmd_reader import PHQMDReader
+    from readers.reader import ReaderBase
 except ImportError as e:
     print(f"Error importing modules: {e}")
     sys.exit(1)
