@@ -1,5 +1,13 @@
 from dataclasses import dataclass
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional
+
+CHARGED_PDGIDS = [
+    211,
+    -211,
+    2212,
+    13,
+    -13
+]
 
 
 @dataclass
