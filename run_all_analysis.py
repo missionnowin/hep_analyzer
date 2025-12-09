@@ -10,6 +10,8 @@ import multiprocessing as mp
 import argparse
 import gc
 
+from utils.lab_transofrmer import CMToLabTransformer
+
 
 try:
     from analyzers.general.comparison_analyzer import RunComparisonAnalyzer
@@ -146,6 +148,7 @@ class UnifiedAnalysisEngine:
             threshold_confidence=0.05,     # Moderate confidence for subtle effects
             threshold_absolute_excess=0
         )
+        transformer = CMToLabTransformer.from_system_info(system_info)
         
         # Stream batches from both files
         reader_mod: ReaderBase = MultiFormatReader.open(str(file_mod), self.file_format)
@@ -158,17 +161,21 @@ class UnifiedAnalysisEngine:
             reader_mod.stream_batch(batch_size),
             reader_unm.stream_batch(batch_size)
         ):
+            # Convert to lab system
+            batch_mod_lab = transformer.transform_batch(batch_mod)
+            batch_unm_lab = transformer.transform_batch(batch_unm)
+
             # Accumulate statistics for both datasets
-            for event_particles in batch_mod:
+            for event_particles in batch_mod_lab:
                 agg_mod.accumulate_event(event_particles)
             
-            for event_particles in batch_unm:
+            for event_particles in batch_unm_lab:
                 agg_unm.accumulate_event(event_particles)
             
             # Analyze cumulative effects
-            cumulative_analyzer.process_batch(batch_mod, batch_unm)
+            cumulative_analyzer.process_batch(batch_mod_lab, batch_unm_lab)
             
-            total_events += len(batch_mod)
+            total_events += len(batch_mod_lab)
             
             # Clear batch from memory immediately
             batch_mod.clear()
