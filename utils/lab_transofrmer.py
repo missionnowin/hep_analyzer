@@ -12,6 +12,7 @@ class CMToLabTransformer:
     def __init__(self, gamma: float, beta: float):
         self.gamma = gamma
         self.beta = beta
+
     
     @classmethod
     def from_collision_energy(cls, sqrt_s_nn: float, A1: int = 197, A2: int = 197) -> 'CMToLabTransformer':
@@ -27,6 +28,7 @@ class CMToLabTransformer:
         
         return cls(gamma=gamma, beta=beta)
     
+    
     @classmethod
     def from_system_info(cls, system_info: Dict) -> 'CMToLabTransformer':
         sqrt_s_nn = system_info.get('sqrt_s_NN', 200.0)
@@ -34,6 +36,7 @@ class CMToLabTransformer:
         A2 = system_info.get('A2', 197)
         
         return cls.from_collision_energy(sqrt_s_nn, A1=A1, A2=A2)
+    
     
     def transform_momentum(
         self,
@@ -48,6 +51,7 @@ class CMToLabTransformer:
         E_lab = self.gamma * (energy_cm + self.beta * pz_cm)
         
         return px_lab, py_lab, pz_lab, E_lab
+    
     
     def transform_particle(self, particle: Particle):
         # Get CM values
