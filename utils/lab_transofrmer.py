@@ -7,7 +7,6 @@ from models.particle import Particle
 
 class CMToLabTransformer:
     # Nucleon rest mass (GeV/c²)
-    M_NUCLEON = 0.939565
     
     def __init__(self, gamma: float, beta: float):
         self.gamma = gamma
@@ -15,18 +14,19 @@ class CMToLabTransformer:
 
     
     @classmethod
-    def from_collision_energy(cls, sqrt_s_nn: float, A1: int = 197, A2: int = 197) -> 'CMToLabTransformer':
-        m = cls.M_NUCLEON
-        
-        if A1 == A2:
-            gamma = (sqrt_s_nn**2 + 2 * m**2) / (2 * m**2)
-        else:
-            gamma = (sqrt_s_nn**2 + 2 * m**2) / (2 * m**2)
-        
-        # Calculate β from γ
-        beta = np.sqrt(1.0 - 1.0 / (gamma**2)) if gamma > 1.0 else 0.0
-        
-        return cls(gamma=gamma, beta=beta)
+    def from_collision_energy(cls, e_kin_lab: float, A1: int, A2: int) -> 'CMToLabTransformer':   
+        # Nucleon mass (GeV)
+        M_NUCLEON = 0.938
+        # Calculate masses
+        M1 = A1 * M_NUCLEON  # projectile mass
+        M2 = A2 * M_NUCLEON  # target mass
+        E_kin_lab = e_kin_lab * M1
+
+        beta_cm = - np.sqrt(E_kin_lab**2 + 2 * E_kin_lab * M1) / (E_kin_lab + M1 + M2)
+        gamma_cm = 1 / np.sqrt(1 - beta_cm**2)
+
+        return cls(gamma=gamma_cm, beta=beta_cm)
+
     
     
     @classmethod
@@ -47,7 +47,7 @@ class CMToLabTransformer:
     ) -> Tuple[float, float, float, float]:
         px_lab = px_cm
         py_lab = py_cm
-        pz_lab = self.gamma * (pz_cm + self.beta * energy_cm)
+        pz_lab = - self.gamma * (pz_cm + self.beta * energy_cm)
         E_lab = self.gamma * (energy_cm + self.beta * pz_cm)
         
         return px_lab, py_lab, pz_lab, E_lab
@@ -59,7 +59,7 @@ class CMToLabTransformer:
         py_cm = particle.py
         pz_cm = particle.pz
         energy_cm = particle.E
-        
+
         # Transform momentum and energy
         px_lab, py_lab, pz_lab, E_lab = self.transform_momentum(
             px_cm, py_cm, pz_cm, energy_cm
