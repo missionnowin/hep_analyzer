@@ -22,7 +22,7 @@ class CMToLabTransformer:
         M2 = A2 * M_NUCLEON  # target mass
         E_kin_lab = e_kin_lab * M1
 
-        beta_cm = - np.sqrt(E_kin_lab**2 + 2 * E_kin_lab * M1) / (E_kin_lab + M1 + M2)
+        beta_cm = np.sqrt(E_kin_lab**2 + 2 * E_kin_lab * M1) / (E_kin_lab + M1 + M2)
         gamma_cm = 1 / np.sqrt(1 - beta_cm**2)
 
         return cls(gamma=gamma_cm, beta=beta_cm)
@@ -47,8 +47,8 @@ class CMToLabTransformer:
     ) -> Tuple[float, float, float, float]:
         px_lab = px_cm
         py_lab = py_cm
-        pz_lab = - self.gamma * (pz_cm + self.beta * energy_cm)
-        E_lab = self.gamma * (energy_cm + self.beta * pz_cm)
+        pz_lab = self.gamma * (-pz_cm + self.beta * energy_cm)
+        E_lab = self.gamma * (energy_cm - self.beta * pz_cm)
         
         return px_lab, py_lab, pz_lab, E_lab
     
