@@ -1,12 +1,24 @@
 from dataclasses import dataclass
 from typing import Dict, Optional
 
-CHARGED_PDGIDS = [
-    211,
-    -211,
-    2212,
+MUONS = [
     13,
     -13
+]
+
+PIONS = [
+    211,
+    -211,
+]
+
+PROTONS = [
+    2212,
+]
+
+CHARGED_PDGIDS = [
+    *MUONS,
+    *PIONS,
+    *PROTONS
 ]
 
 

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import numpy as np
 
-from models.ions import CHARGED_PDGIDS
+from models.ions import CHARGED_PDGIDS, MUONS, PIONS, PROTONS
 
 try:
     from models.cumulative_singnature import CumulativeSignature
@@ -67,14 +67,17 @@ class CumulativeAnalyzer:
         # Angular distributions
         self.theta_dist_mod = []
         self.theta_dist_unm = []
-        self.phi_dist_mod = []
-        self.phi_dist_unm = []
-
-        self.phi_dist_charged_mod = []
-        self.phi_dist_charged_unmod = []
 
         self.theta_dist_charged_mod = []
         self.theta_dist_charged_unmod = []
+
+        self.theta_dist_pions_mod = []
+        self.theta_dist_muons_mod = []
+        self.theta_dist_protons_mod = []
+
+        self.theta_dist_pions_unmod = []
+        self.theta_dist_muons_unmod = []
+        self.theta_dist_protons_unmod = []
 
         self._finalized = False
     
@@ -103,22 +106,25 @@ class CumulativeAnalyzer:
         self._accumulate_from_batch(batch_mod, batch_unm)
     
 
-    def _accumulate_from_batch(self, batch_mod: List, batch_unm: List) -> None:
+    def _accumulate_from_batch(self, batch_mod: List[List[Particle]], batch_unm: List[List[Particle]]) -> None:
         """Accumulate forbidden particles and angular samples from batch."""
         # Accumulate data
         for event in batch_mod:
             if event:
                 for p in event:
                     reason = self._get_forbidden_reason(p)
-                    theta, phi = self._get_angles_from_particle(p)
+                    theta, _ = self._get_angles_from_particle(p)
                     if theta is not None:
                         self.theta_dist_mod.append(theta)
-                        if p.particle_id in CHARGED_PDGIDS:
+                        if p.particle_id in CHARGED_PDGIDS and p.E > 0.3:
                             self.theta_dist_charged_mod.append(theta)
-                    if phi is not None:
-                        self.phi_dist_mod.append(phi)
-                        if p.particle_id in CHARGED_PDGIDS:
-                            self.phi_dist_charged_mod.append(phi)
+                            if p.particle_id in PROTONS:
+                                self.theta_dist_protons_mod.append(theta)
+                            elif p.particle_id in PIONS:
+                                self.theta_dist_pions_mod.append(theta)
+                            elif p.particle_id in MUONS:
+                                self.theta_dist_muons_mod.append(theta)
+
                     if reason:
                         self.total_forbidden_mod += 1
                         self.forbidden_reasons_mod[reason] += 1
@@ -127,15 +133,17 @@ class CumulativeAnalyzer:
             if event:
                 for p in event:
                     reason = self._get_forbidden_reason(p)
-                    theta, phi = self._get_angles_from_particle(p)
+                    theta, _ = self._get_angles_from_particle(p)
                     if theta is not None:
                         self.theta_dist_unm.append(theta)
-                        if p.particle_id in CHARGED_PDGIDS:
+                        if p.particle_id in CHARGED_PDGIDS and p.E > 0.3:
                             self.theta_dist_charged_unmod.append(theta)
-                    if phi is not None:
-                        self.phi_dist_unm.append(phi)
-                        if p.particle_id in CHARGED_PDGIDS:
-                            self.phi_dist_charged_unmod.append(phi)
+                            if p.particle_id in PROTONS:
+                                self.theta_dist_protons_unmod.append(theta)
+                            elif p.particle_id in PIONS:
+                                self.theta_dist_pions_unmod.append(theta)
+                            elif p.particle_id in MUONS:
+                                self.theta_dist_muons_unmod.append(theta)
                     if reason:
                         self.total_forbidden_unm += 1
                         self.forbidden_reasons_unm[reason] += 1
@@ -218,7 +226,7 @@ class CumulativeAnalyzer:
             ax.hist(self.theta_dist_mod, bins=bins, alpha=0.6, label='Modified', color='red', edgecolor='black')
             ax.hist(self.theta_dist_unm, bins=bins, alpha=0.6, label='Unmodified', color='blue', edgecolor='black')
             
-            ax.set_xlabel('Polar Angle θ (radians)', fontsize=12)
+            ax.set_xlabel('Scattering Angle θ (radians)', fontsize=12)
             ax.set_ylabel('Particle Count', fontsize=12)
             ax.set_title('Angular Distribution Comparison', fontsize=14, fontweight='bold')
             ax.legend(fontsize=11)
@@ -229,7 +237,7 @@ class CumulativeAnalyzer:
             plt.close()
             plot_paths.append(plot_path)
 
-        # Plot 2: Angular Distribution (Theta)
+        # Plot 2_1: Angular Distribution (Theta)
         if len(self.theta_dist_charged_mod) > 0 and len(self.theta_dist_charged_unmod) > 0:
             fig, ax = plt.subplots(figsize=(10, 6))
             
@@ -237,56 +245,75 @@ class CumulativeAnalyzer:
             ax.hist(self.theta_dist_charged_mod, bins=bins, alpha=0.6, label='Modified', color='red', edgecolor='black')
             ax.hist(self.theta_dist_charged_unmod, bins=bins, alpha=0.6, label='Unmodified', color='blue', edgecolor='black')
             
-            ax.set_xlabel('Polar Angle θ (radians)', fontsize=12)
+            ax.set_xlabel('Scattering Angle θ (radians)', fontsize=12)
             ax.set_ylabel('Particle Count', fontsize=12)
             ax.set_title('Angular Distribution Comparison For Charged Particles', fontsize=14, fontweight='bold')
             ax.legend(fontsize=11)
             ax.grid(True, alpha=0.3)
             
-            plot_path = output_dir / "02_theta_distribution_charged.png"
+            plot_path = output_dir / "02_a_theta_distribution_charged.png"
             plt.savefig(plot_path, dpi=150, bbox_inches='tight')
             plt.close()
             plot_paths.append(plot_path)
 
-        # Plot 3: Angular Distribution (Phi)
-        if len(self.phi_dist_mod) > 0 and len(self.phi_dist_unm) > 0:
+        # Plot 2_2: Angular Distribution (Theta)
+        if len(self.theta_dist_pions_mod) > 0 and len(self.theta_dist_pions_unmod) > 0:
             fig, ax = plt.subplots(figsize=(10, 6))
             
             bins = np.linspace(0, np.pi, 50)
-            ax.hist(self.phi_dist_mod, bins=bins, alpha=0.6, label='Modified', color='red', edgecolor='black')
-            ax.hist(self.phi_dist_unm, bins=bins, alpha=0.6, label='Unmodified', color='blue', edgecolor='black')
+            ax.hist(self.theta_dist_pions_mod, bins=bins, alpha=0.6, label='Modified', color='red', edgecolor='black')
+            ax.hist(self.theta_dist_pions_unmod, bins=bins, alpha=0.6, label='Unmodified', color='blue', edgecolor='black')
             
-            ax.set_xlabel('Azimutal Angle θ (radians)', fontsize=12)
+            ax.set_xlabel('Scattering Angle θ (radians)', fontsize=12)
             ax.set_ylabel('Particle Count', fontsize=12)
-            ax.set_title('Angular Distribution Comparison', fontsize=14, fontweight='bold')
+            ax.set_title('Angular Distribution Comparison For Pions', fontsize=14, fontweight='bold')
             ax.legend(fontsize=11)
             ax.grid(True, alpha=0.3)
             
-            plot_path = output_dir / "03_phi_distribution.png"
+            plot_path = output_dir / "02_b_theta_distribution_pions.png"
+            plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+            plt.close()
+            plot_paths.append(plot_path)
+
+        # Plot 2_3: Angular Distribution (Theta)
+        if len(self.theta_dist_protons_mod) > 0 and len(self.theta_dist_protons_unmod) > 0:
+            fig, ax = plt.subplots(figsize=(10, 6))
+            
+            bins = np.linspace(0, np.pi, 50)
+            ax.hist(self.theta_dist_protons_mod, bins=bins, alpha=0.6, label='Modified', color='red', edgecolor='black')
+            ax.hist(self.theta_dist_protons_unmod, bins=bins, alpha=0.6, label='Unmodified', color='blue', edgecolor='black')
+            
+            ax.set_xlabel('Scattering Angle θ (radians)', fontsize=12)
+            ax.set_ylabel('Particle Count', fontsize=12)
+            ax.set_title('Angular Distribution Comparison For Protons', fontsize=14, fontweight='bold')
+            ax.legend(fontsize=11)
+            ax.grid(True, alpha=0.3)
+            
+            plot_path = output_dir / "02_c_theta_distribution_protons.png"
             plt.savefig(plot_path, dpi=150, bbox_inches='tight')
             plt.close()
             plot_paths.append(plot_path)
         
-        # Plot 4: Angular Distribution (Phi)
-        if len(self.phi_dist_charged_mod) > 0 and len(self.phi_dist_charged_unmod) > 0:
+        # Plot 2_4: Angular Distribution (Theta)
+        if len(self.theta_dist_muons_mod) > 0 and len(self.theta_dist_muons_unmod) > 0:
             fig, ax = plt.subplots(figsize=(10, 6))
             
             bins = np.linspace(0, np.pi, 50)
-            ax.hist(self.phi_dist_charged_mod, bins=bins, alpha=0.6, label='Modified', color='red', edgecolor='black')
-            ax.hist(self.phi_dist_charged_unmod, bins=bins, alpha=0.6, label='Unmodified', color='blue', edgecolor='black')
+            ax.hist(self.theta_dist_muons_mod, bins=bins, alpha=0.6, label='Modified', color='red', edgecolor='black')
+            ax.hist(self.theta_dist_muons_unmod, bins=bins, alpha=0.6, label='Unmodified', color='blue', edgecolor='black')
             
-            ax.set_xlabel('Azimutal Angle θ (radians)', fontsize=12)
+            ax.set_xlabel('Scattering Angle θ (radians)', fontsize=12)
             ax.set_ylabel('Particle Count', fontsize=12)
-            ax.set_title('Angular Distribution Comparison For Charged Particles', fontsize=14, fontweight='bold')
+            ax.set_title('Angular Distribution Comparison For Muons', fontsize=14, fontweight='bold')
             ax.legend(fontsize=11)
             ax.grid(True, alpha=0.3)
             
-            plot_path = output_dir / "04_phi_distribution_charged.png"
+            plot_path = output_dir / "02_d_theta_distribution_muons.png"
             plt.savefig(plot_path, dpi=150, bbox_inches='tight')
             plt.close()
             plot_paths.append(plot_path)
         
-        # Plot 5: Forbidden Particles Breakdown
+        # Plot 3: Forbidden Particles Breakdown
         fig, ax = plt.subplots(figsize=(10, 6))
         categories = list(self.forbidden_reasons_mod.keys())
         mod_counts = [self.forbidden_reasons_mod[cat] for cat in categories]
@@ -302,12 +329,12 @@ class CumulativeAnalyzer:
         ax.set_xticklabels(categories, rotation=45, ha='right')
         ax.legend(fontsize=11)
         ax.grid(True, alpha=0.3, axis='y')
-        plot_path = output_dir / "05_forbidden_regions.png"
+        plot_path = output_dir / "03_forbidden_regions.png"
         plt.savefig(plot_path, dpi=150, bbox_inches='tight')
         plt.close()
         plot_paths.append(plot_path)
         
-        # Plot 6: Multiplicity Distribution
+        # Plot 4: Multiplicity Distribution
         if len(self.multiplicity_mod) > 0 and len(self.multiplicity_unm) > 0:
             fig, ax = plt.subplots(figsize=(10, 6))
             bins = np.linspace(
@@ -322,12 +349,12 @@ class CumulativeAnalyzer:
             ax.set_title('Event Multiplicity Distribution', fontsize=14, fontweight='bold')
             ax.legend(fontsize=11)
             ax.grid(True, alpha=0.3)
-            plot_path = output_dir / "06_multiplicity_distribution.png"
+            plot_path = output_dir / "04_multiplicity_distribution.png"
             plt.savefig(plot_path, dpi=150, bbox_inches='tight')
             plt.close()
             plot_paths.append(plot_path)
         
-        # Plot 7: Signature Summary
+        # Plot 5: Signature Summary
         if len(self.signatures) > 0:
             sig_types = {}
             sig_strengths = {}
@@ -356,7 +383,7 @@ class CumulativeAnalyzer:
             ax2.legend(fontsize=10)
             ax2.grid(True, alpha=0.3)
             
-            plot_path = output_dir / "07_signature_summary.png"
+            plot_path = output_dir / "05_signature_summary.png"
             plt.savefig(plot_path, dpi=150, bbox_inches='tight')
             plt.close()
             plot_paths.append(plot_path)
@@ -496,8 +523,6 @@ class CumulativeAnalyzer:
         self.forbidden_reasons_unm = {"very_forward": 0, "very_backward": 0, "impossible_kin": 0, "extreme_sideways": 0}
         self.theta_dist_mod = []
         self.theta_dist_unm = []
-        self.phi_dist_mod = []
-        self.phi_dist_unm = []
         self.total_forbidden_mod = 0
         self.total_forbidden_unm = 0
         self._finalized = False
