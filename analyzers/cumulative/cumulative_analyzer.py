@@ -1,422 +1,500 @@
-import sys
-from typing import Dict, List, Tuple
-from pathlib import Path
-from scipy.ndimage import gaussian_filter
+"""
+Cumulative-effect analyzer for heavy-ion collisions.
 
-from matplotlib import cm
-from matplotlib.patches import Patch
+Headline observable
+-------------------
+The cumulative variable
+        x_cum  =  (E - p_z) / m_N
+in the **target rest frame** (input data is already in that frame).
+
+Physical meaning
+    x_cum < 1   : kinematically allowed in a single N+N collision -- "ordinary" particle
+    x_cum > 1   : cumulative -- only producible if the projectile sees an
+                  effective target with mass > m_N
+                  (short-range correlations, fluctons, multi-nucleon clusters)
+    1 < x_cum < 2 : 1-nucleon cumulative
+    2 < x_cum < 3 : 2-nucleon cumulative   ...
+
+The plots produced here are designed to make the cumulative effect
+*visually obvious*:
+
+    1. (x_cum, p_perp) density heatmaps for modified vs. unmodified
+       (logarithmic colour scale).
+    2. A *ratio* panel  density_mod / density_unm  -- shows directly where
+       the modification produces extra particles.
+    3. 1D x_cum spectrum (log-y), mod vs. unm overlaid.
+    4. Per-event distribution of N_cum  =  number of particles with x_cum > 1
+       in a single event, mod vs. unm.
+    5. Backward-only k_z vs k_perp density heatmap (sanity check, comparable
+       to the older scatter plot).
+
+All plots are produced separately for charged hadrons and for protons.
+"""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
 import numpy as np
 
 from models.ions import CHARGED_PDGIDS, PROTONS
 
 try:
     from models.particle import Particle
-except ImportError as e:
+except ImportError as e:  # pragma: no cover
     print(f"Error importing modules: {e}")
     sys.exit(1)
 
 
+# Nucleon mass in GeV.  Used for the cumulative variable definition.
+M_N = 0.9382720813
+
+
+# ----------------------------------------------------------------------
+# Internal container for one (species, dataset) bucket.
+# ----------------------------------------------------------------------
+class _SpeciesBucket:
+    """Accumulator for one particle species in one dataset (mod or unm)."""
+
+    __slots__ = ("xcum", "pperp", "pz", "n_cum_per_event")
+
+    def __init__(self) -> None:
+        self.xcum: List[float] = []
+        self.pperp: List[float] = []
+        self.pz: List[float] = []
+        # one entry per event:  number of particles with x_cum > 1
+        self.n_cum_per_event: List[int] = []
+
+
+# ----------------------------------------------------------------------
 class CumulativeAnalyzer:
-    def __init__(self):
+    """
+    Build cumulative-effect plots and statistics from a stream of events.
+
+    Public API (unchanged):
+        process_batch(batch_mod, batch_unm)
+        plot_distributions(output_dir) -> List[Path]
+        get_statistics() -> Dict
+        reset()
+    """
+
+    # Cuts applied when filling the buckets (target frame, "going backward").
+    _E_MIN = 0.3        # GeV  -- drop very-soft particles, same as old code
+
+    # Binning for the headline 2D heatmap.
+    _XCUM_EDGES = np.linspace(0.0, 3.0, 61)        # 60 bins, 0..3
+    _PPERP_EDGES = np.linspace(0.0, 1.5, 31)       # 30 bins, 0..1.5 GeV/c
+
+    # Binning for the backward k_z, k_perp heatmap (sanity check vs. legacy).
+    _KZ_EDGES = np.linspace(-1.4, 0.0, 57)
+    _KPERP_EDGES = np.linspace(0.0, 1.5, 31)
+
+    # Cumulative threshold.
+    _XCUM_THRESHOLD = 1.0
+
+    def __init__(self) -> None:
+        # Event / particle counters (kept for backward-compat in stats)
         self.total_events_mod = 0
         self.total_events_unm = 0
-
         self.total_particles_mod = 0
         self.total_particles_unm = 0
+        self.multiplicity_mod: List[int] = []
+        self.multiplicity_unm: List[int] = []
 
-        self.multiplicity_mod = []
-        self.multiplicity_unm = []
-        
-        # Angular distributions
-        self.theta_dist_mod = []
-        self.theta_dist_unm = []
-
-        self.theta_dist_charged_mod = []
-        self.theta_dist_charged_unmod = []
-
-        self.theta_dist_protons_mod = []
-        self.theta_dist_protons_unmod = []
-
-        # Kinematic phase space (kz vs k_perp) scatter data
-        self.kz_kperp_charged_mod: List[Tuple[float, float]] = []
-        self.kz_kperp_charged_unmod: List[Tuple[float, float]] = []
-
-        self.kz_kperp_protons_mod: List[Tuple[float, float]] = []
-        self.kz_kperp_protons_unmod: List[Tuple[float, float]] = []
+        # species: { "charged", "protons" }, dataset: { "mod", "unm" }
+        self._buckets: Dict[str, Dict[str, _SpeciesBucket]] = {
+            "charged": {"mod": _SpeciesBucket(), "unm": _SpeciesBucket()},
+            "protons": {"mod": _SpeciesBucket(), "unm": _SpeciesBucket()},
+        }
 
         self._finalized = False
-    
 
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
     def process_batch(self, batch_mod: List, batch_unm: List) -> None:
-        """
-        Process a batch of events from modified and unmodified data.
-        """
+        """Consume one batch of events from the modified and unmodified runs."""
         if not batch_mod or not batch_unm:
             return
-        
+
+        # Bookkeeping: per-event totals.
         for particles_mod, particles_unm in zip(batch_mod, batch_unm):
             self.total_events_mod += 1
             self.total_events_unm += 1
-            
             n_mod = len(particles_mod) if particles_mod else 0
             n_unm = len(particles_unm) if particles_unm else 0
-            
             self.total_particles_mod += n_mod
             self.total_particles_unm += n_unm
-            
             self.multiplicity_mod.append(n_mod)
             self.multiplicity_unm.append(n_unm)
-        
-        # Accumulate data only
-        self._accumulate_from_batch(batch_mod, batch_unm)
-    
 
-    def _accumulate_from_batch(self, batch_mod: List[List[Particle]], batch_unm: List[List[Particle]]) -> None:
-        """Accumulate forbidden particles and angular samples from batch."""
-        # Accumulate data
-        for event in batch_mod:
-            if event:
-                for p in event:
-                    theta, _ = self._get_angles_from_particle(p)
-                    if theta is not None:
-                        self.theta_dist_mod.append(theta)
-                        kz = p.pz
-                        kperp = (p.px**2 + p.py**2) ** 0.5
-                        
-                        if p.particle_id in CHARGED_PDGIDS and p.E > 0.3 and kz < 0:
-                            self.theta_dist_charged_mod.append(theta)
+        # Physics observables.
+        self._fill_dataset(batch_mod, "mod")
+        self._fill_dataset(batch_unm, "unm")
 
-                            kz = p.pz
-                            kperp = (p.px**2 + p.py**2) ** 0.5
+    # ------------------------------------------------------------------
+    def _fill_dataset(self, batch: List[List[Particle]], tag: str) -> None:
+        for event in batch:
+            if not event:
+                # Still count "0 cumulative particles" for an empty event so
+                # that the per-event histogram averages correctly.
+                self._buckets["charged"][tag].n_cum_per_event.append(0)
+                self._buckets["protons"][tag].n_cum_per_event.append(0)
+                continue
 
-                            self.kz_kperp_charged_mod.append((kz, kperp))
-                            if p.particle_id in PROTONS:
-                                self.theta_dist_protons_mod.append(theta)
-                                self.kz_kperp_protons_mod.append((kz, kperp))
-        
-        for event in batch_unm:
-            if event:
-                for p in event:
-                    theta, _ = self._get_angles_from_particle(p)
-                    if theta is not None:
-                        self.theta_dist_unm.append(theta)
-                        kz = p.pz
-                        kperp = (p.px**2 + p.py**2) ** 0.5
-                        
-                        if p.particle_id in CHARGED_PDGIDS and p.E > 0.3 and kz < 0:
-                            self.theta_dist_charged_unmod.append(theta)
+            n_cum_charged = 0
+            n_cum_protons = 0
 
-                            self.kz_kperp_charged_unmod.append((kz, kperp))
-                            if p.particle_id in PROTONS:
-                                self.theta_dist_protons_unmod.append(theta)
-                                self.kz_kperp_protons_unmod.append((kz, kperp))
+            for p in event:
+                # input data is already in target rest frame
+                if p.E <= self._E_MIN:
+                    continue
+                pid = p.particle_id
+                is_charged = pid in CHARGED_PDGIDS
+                is_proton = pid in PROTONS
+                if not (is_charged or is_proton):
+                    continue
 
-    
-    def _get_angles_from_particle(self, p: Particle) -> Tuple:
-        """
-        Calculate theta (polar angle) and phi (azimuthal angle) from particle momentum.
-        Returns (theta, phi) in radians or (None, None) if invalid.
-        """
-        p_total = (p.px**2 + p.py**2 + p.pz**2) ** 0.5
-        
-        if p_total == 0:
-            return None, None
-        
-        theta = np.arccos(np.clip(p.pz / p_total, -1.0, 1.0))
-        phi = np.arctan2(p.py, p.px)
-        
-        return theta, phi
-    
+                pperp = float(np.hypot(p.px, p.py))
+                pz = float(p.pz)
+                xcum = (p.E - pz) / M_N
+
+                if is_charged:
+                    bkt = self._buckets["charged"][tag]
+                    bkt.xcum.append(xcum)
+                    bkt.pperp.append(pperp)
+                    bkt.pz.append(pz)
+                    if xcum > self._XCUM_THRESHOLD:
+                        n_cum_charged += 1
+
+                if is_proton:
+                    bkt = self._buckets["protons"][tag]
+                    bkt.xcum.append(xcum)
+                    bkt.pperp.append(pperp)
+                    bkt.pz.append(pz)
+                    if xcum > self._XCUM_THRESHOLD:
+                        n_cum_protons += 1
+
+            self._buckets["charged"][tag].n_cum_per_event.append(n_cum_charged)
+            self._buckets["protons"][tag].n_cum_per_event.append(n_cum_protons)
+
+    # ------------------------------------------------------------------
+    # Plotting
+    # ------------------------------------------------------------------
     def plot_distributions(self, output_dir) -> List[Path]:
-        """
-        Generate plots comparing modified vs unmodified distributions.
-        Returns list of plot file paths.
-        """
         try:
             import matplotlib.pyplot as plt
-            from pathlib import Path
+            from matplotlib.colors import LogNorm
         except ImportError:
             print("Matplotlib not available - skipping plots")
             return []
-        
+
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
-        plot_paths = []
-        
-        # Plot 1: Angular Distribution (Theta)
-        if len(self.theta_dist_mod) > 0 and len(self.theta_dist_unm) > 0:
-            fig, ax = plt.subplots(figsize=(10, 6))
-            
-            bins = np.linspace(0, np.pi, 50)
-            ax.hist(self.theta_dist_mod, bins=bins, alpha=0.6, label='Modified', color='red', edgecolor='black')
-            ax.hist(self.theta_dist_unm, bins=bins, alpha=0.6, label='Unmodified', color='blue', edgecolor='black')
-            
-            ax.set_xlabel('Scattering Angle θ (radians)', fontsize=12)
-            ax.set_ylabel('Particle Count', fontsize=12)
-            ax.set_title('Angular Distribution Comparison', fontsize=14, fontweight='bold')
-            ax.legend(fontsize=11)
-            ax.grid(True, alpha=0.3)
-            
-            plot_path = output_dir / "01_theta_distribution.png"
-            plt.savefig(plot_path, dpi=150, bbox_inches='tight')
-            plt.close()
-            plot_paths.append(plot_path)
+        out: List[Path] = []
 
-        # Plot 2_1: Angular Distribution (Theta)
-        if len(self.theta_dist_charged_mod) > 0 and len(self.theta_dist_charged_unmod) > 0:
-            fig, ax = plt.subplots(figsize=(10, 6))
-            
-            bins = np.linspace(0, np.pi, 50)
-            ax.hist(self.theta_dist_charged_mod, bins=bins, alpha=0.6, label='Modified', color='red', edgecolor='black')
-            ax.hist(self.theta_dist_charged_unmod, bins=bins, alpha=0.6, label='Unmodified', color='blue', edgecolor='black')
-            
-            ax.set_xlabel('Scattering Angle θ (radians)', fontsize=12)
-            ax.set_ylabel('Particle Count', fontsize=12)
-            ax.set_title('Angular Distribution Comparison For Charged Particles', fontsize=14, fontweight='bold')
-            ax.legend(fontsize=11)
-            ax.grid(True, alpha=0.3)
-            
-            plot_path = output_dir / "02_a_theta_distribution_charged.png"
-            plt.savefig(plot_path, dpi=150, bbox_inches='tight')
-            plt.close()
-            plot_paths.append(plot_path)
+        for species in ("charged", "protons"):
+            tag_mod = self._buckets[species]["mod"]
+            tag_unm = self._buckets[species]["unm"]
+            if not tag_mod.xcum or not tag_unm.xcum:
+                continue
 
-        # Plot 2_3: Angular Distribution (Theta)
-        if len(self.theta_dist_protons_mod) > 0 and len(self.theta_dist_protons_unmod) > 0:
-            fig, ax = plt.subplots(figsize=(10, 6))
-            
-            bins = np.linspace(0, np.pi, 50)
-            ax.hist(self.theta_dist_protons_mod, bins=bins, alpha=0.6, label='Modified', color='red', edgecolor='black')
-            ax.hist(self.theta_dist_protons_unmod, bins=bins, alpha=0.6, label='Unmodified', color='blue', edgecolor='black')
-            
-            ax.set_xlabel('Scattering Angle θ (radians)', fontsize=12)
-            ax.set_ylabel('Particle Count', fontsize=12)
-            ax.set_title('Angular Distribution Comparison For Protons', fontsize=14, fontweight='bold')
-            ax.legend(fontsize=11)
-            ax.grid(True, alpha=0.3)
-            
-            plot_path = output_dir / "02_c_theta_distribution_protons.png"
-            plt.savefig(plot_path, dpi=150, bbox_inches='tight')
-            plt.close()
-            plot_paths.append(plot_path)
-        
-# Plot 2_5: kz vs k_perp for charged particles
-        if len(self.kz_kperp_charged_mod) > 0:
-            fig, ax = plt.subplots(figsize=(10, 6))
+            label_species = {"charged": "charged hadrons", "protons": "protons"}[species]
+            prefix = {"charged": "charged", "protons": "protons"}[species]
 
+            # 1) (x_cum, p_perp) density: mod | unm | ratio
+            out.append(self._plot_xcum_pperp_panels(
+                tag_mod, tag_unm, label_species,
+                output_dir / f"01_{prefix}_xcum_pperp_panels.png", plt, LogNorm,
+            ))
 
-            kz_mod = [point[0] for point in self.kz_kperp_charged_mod]
-            kperp_mod = [point[1] for point in self.kz_kperp_charged_mod]
+            # 2) 1D x_cum spectrum, mod vs unm overlay (log-y, normalized per event)
+            out.append(self._plot_xcum_1d(
+                tag_mod, tag_unm, label_species,
+                output_dir / f"02_{prefix}_xcum_spectrum.png", plt,
+            ))
 
+            # 3) Per-event N_cum distribution
+            out.append(self._plot_ncum_per_event(
+                tag_mod, tag_unm, label_species,
+                output_dir / f"03_{prefix}_ncum_per_event.png", plt,
+            ))
 
-            ax.scatter(kz_mod, kperp_mod, s=8, alpha=0.5, label='Modified', color='red')
+            # 4) Backward k_z, k_perp density (sanity / legacy)
+            out.append(self._plot_kz_kperp_density(
+                tag_mod, tag_unm, label_species,
+                output_dir / f"04_{prefix}_kz_kperp_density.png", plt, LogNorm,
+            ))
 
+        return [p for p in out if p is not None]
 
-            ax.set_xlabel('k_z', fontsize=12)
-            ax.set_ylabel('k_perpendicular', fontsize=12)
-            ax.set_title('k_z vs k_perpendicular For Charged Particles', fontsize=14, fontweight='bold')
-            ax.legend(fontsize=11)
-            ax.grid(True, alpha=0.3)
+    # ------------------------------------------------------------------
+    # Individual plotters
+    # ------------------------------------------------------------------
+    def _plot_xcum_pperp_panels(self, mod, unm, species, path, plt, LogNorm):
+        H_mod, _, _ = np.histogram2d(
+            mod.xcum, mod.pperp, bins=[self._XCUM_EDGES, self._PPERP_EDGES])
+        H_unm, _, _ = np.histogram2d(
+            unm.xcum, unm.pperp, bins=[self._XCUM_EDGES, self._PPERP_EDGES])
 
+        # Normalise per event so the two datasets are directly comparable.
+        n_ev_mod = max(self.total_events_mod, 1)
+        n_ev_unm = max(self.total_events_unm, 1)
+        D_mod = H_mod / n_ev_mod
+        D_unm = H_unm / n_ev_unm
 
-            plot_path = output_dir / "02_e_kz_kperp_charged_mod.png"
-            plt.savefig(plot_path, dpi=150, bbox_inches='tight')
-            plt.close()
-            plot_paths.append(plot_path)
-       
-        # Plot 2_5: kz vs k_perp for charged particles
-        if len(self.kz_kperp_charged_unmod) > 0:
-            fig, ax = plt.subplots(figsize=(10, 6))
+        # Ratio: avoid /0 by floor on denominator.
+        eps = 1.0 / max(n_ev_unm, 1)        # one count per event = floor
+        ratio = np.where(D_unm > 0, D_mod / np.maximum(D_unm, eps), np.nan)
 
+        fig, axes = plt.subplots(1, 3, figsize=(18, 5),
+                                 gridspec_kw={"wspace": 0.35})
 
-            kz_unm = [point[0] for point in self.kz_kperp_charged_unmod]
-            kperp_unm = [point[1] for point in self.kz_kperp_charged_unmod]
+        # Common color range for the two density panels (log).
+        vmax = max(D_mod.max(), D_unm.max(), 1e-6)
+        vmin = max(min(D_mod[D_mod > 0].min() if (D_mod > 0).any() else vmax,
+                       D_unm[D_unm > 0].min() if (D_unm > 0).any() else vmax),
+                   vmax * 1e-5)
+        norm = LogNorm(vmin=vmin, vmax=vmax)
 
+        ext = [self._XCUM_EDGES[0], self._XCUM_EDGES[-1],
+               self._PPERP_EDGES[0], self._PPERP_EDGES[-1]]
 
-            ax.scatter(kz_unm, kperp_unm, s=8, alpha=0.5, label='Unmodified', color='blue')
+        for ax, D, title in (
+            (axes[0], D_mod, f"Modified: {species}"),
+            (axes[1], D_unm, f"Unmodified: {species}"),
+        ):
+            im = ax.imshow(D.T, origin="lower", aspect="auto", extent=ext,
+                           cmap="viridis", norm=norm)
+            ax.axvline(1.0, color="white", lw=1, ls="--", alpha=0.7)
+            ax.set_xlabel(r"$x_{\mathrm{cum}} = (E - p_z)/m_N$")
+            ax.set_ylabel(r"$p_\perp$  (GeV/c)")
+            ax.set_title(title)
+            fig.colorbar(im, ax=ax, label="particles / event / bin")
 
+        # Ratio panel: diverging around 1.
+        im2 = axes[2].imshow(
+            ratio.T, origin="lower", aspect="auto", extent=ext,
+            cmap="RdBu_r", vmin=0.0, vmax=2.0,
+        )
+        axes[2].axvline(1.0, color="black", lw=1, ls="--", alpha=0.5)
+        axes[2].set_xlabel(r"$x_{\mathrm{cum}}$")
+        axes[2].set_ylabel(r"$p_\perp$  (GeV/c)")
+        axes[2].set_title(f"Ratio mod / unm: {species}")
+        fig.colorbar(im2, ax=axes[2], label="density ratio")
 
-            ax.set_xlabel('k_z', fontsize=12)
-            ax.set_ylabel('k_perpendicular', fontsize=12)
-            ax.set_title('k_z vs k_perpendicular For Charged Particles', fontsize=14, fontweight='bold')
-            ax.legend(fontsize=11)
-            ax.grid(True, alpha=0.3)
+        fig.suptitle(
+            r"Cumulative phase space  ($x_{\mathrm{cum}}$ vs $p_\perp$)"
+            f" -- {species}, target frame",
+            fontsize=14, fontweight="bold",
+        )
+        fig.savefig(path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        return path
 
+    # ------------------------------------------------------------------
+    def _plot_xcum_1d(self, mod, unm, species, path, plt):
+        n_ev_mod = max(self.total_events_mod, 1)
+        n_ev_unm = max(self.total_events_unm, 1)
 
-            plot_path = output_dir / "02_e_kz_kperp_charged_unmod.png"
-            plt.savefig(plot_path, dpi=150, bbox_inches='tight')
-            plt.close()
-            plot_paths.append(plot_path)
+        h_mod, edges = np.histogram(mod.xcum, bins=self._XCUM_EDGES)
+        h_unm, _ = np.histogram(unm.xcum, bins=self._XCUM_EDGES)
+        centers = 0.5 * (edges[:-1] + edges[1:])
+        widths = np.diff(edges)
 
+        # dN/dx_cum per event
+        y_mod = h_mod / (n_ev_mod * widths)
+        y_unm = h_unm / (n_ev_unm * widths)
 
-        # Plot 2_5: kz vs k_perp for charged particles
-        if len(self.kz_kperp_charged_mod) > 0 and len(self.kz_kperp_charged_unmod) > 0:
-            fig, ax = plt.subplots(figsize=(10, 6))
+        fig, (ax_top, ax_bot) = plt.subplots(
+            2, 1, figsize=(10, 7), sharex=True,
+            gridspec_kw={"height_ratios": [3, 1], "hspace": 0.05},
+        )
 
+        ax_top.step(centers, y_unm, where="mid", color="tab:blue",
+                    label="Unmodified", lw=2)
+        ax_top.step(centers, y_mod, where="mid", color="tab:red",
+                    label="Modified", lw=2)
+        ax_top.axvline(1.0, color="k", ls="--", lw=1, alpha=0.5)
+        ax_top.set_yscale("log")
+        ax_top.set_ylabel(r"$\frac{1}{N_{\mathrm{ev}}}\,dN/dx_{\mathrm{cum}}$")
+        ax_top.set_title(
+            f"Cumulative spectrum -- {species}, target frame",
+            fontweight="bold",
+        )
+        ax_top.legend()
+        ax_top.grid(True, which="both", alpha=0.3)
+        ax_top.text(1.02, ax_top.get_ylim()[1] * 0.5,
+                    "cumulative\nregion", color="black",
+                    fontsize=9, alpha=0.7)
 
-            kz_unm = [point[0] for point in self.kz_kperp_charged_unmod]
-            kz_mod = [point[0] for point in self.kz_kperp_charged_mod]
+        # Ratio subplot
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ratio = np.where(y_unm > 0, y_mod / y_unm, np.nan)
+        ax_bot.step(centers, ratio, where="mid", color="tab:purple", lw=2)
+        ax_bot.axhline(1.0, color="k", ls="-", lw=0.7)
+        ax_bot.axvline(1.0, color="k", ls="--", lw=1, alpha=0.5)
+        ax_bot.set_xlabel(r"$x_{\mathrm{cum}} = (E - p_z)/m_N$")
+        ax_bot.set_ylabel("mod / unm")
+        ax_bot.set_ylim(0, 4)
+        ax_bot.grid(True, alpha=0.3)
 
+        fig.savefig(path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        return path
 
-            kperp_unm = [point[1] for point in self.kz_kperp_charged_unmod]
-            kperp_mod = [point[1] for point in self.kz_kperp_charged_mod]
+    # ------------------------------------------------------------------
+    def _plot_ncum_per_event(self, mod, unm, species, path, plt):
+        nmod = np.asarray(mod.n_cum_per_event, dtype=int)
+        nunm = np.asarray(unm.n_cum_per_event, dtype=int)
+        if nmod.size == 0 and nunm.size == 0:
+            return None
 
+        hi = max(int(nmod.max()) if nmod.size else 0,
+                 int(nunm.max()) if nunm.size else 0,
+                 1)
+        edges = np.arange(-0.5, hi + 1.5, 1.0)
 
-            ax.scatter(kz_mod, kperp_mod, s=8, alpha=0.5, label='Modified', color='red')
-            ax.scatter(kz_unm, kperp_unm, s=8, alpha=0.5, label='Unmodified', color='blue')
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.hist(nunm, bins=edges, alpha=0.55, color="tab:blue",
+                label=f"Unmodified  ⟨N⟩ = {nunm.mean():.2f}")
+        ax.hist(nmod, bins=edges, alpha=0.55, color="tab:red",
+                label=f"Modified    ⟨N⟩ = {nmod.mean():.2f}")
+        ax.set_xlabel(r"$N_{\mathrm{cum}}$  (particles with $x_{\mathrm{cum}} > 1$ per event)")
+        ax.set_ylabel("Number of events")
+        ax.set_title(
+            f"Cumulative-particle count per event -- {species}",
+            fontweight="bold",
+        )
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        fig.savefig(path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        return path
 
+    # ------------------------------------------------------------------
+    def _plot_kz_kperp_density(self, mod, unm, species, path, plt, LogNorm):
+        # Same axes as the older scatter plot but properly density-binned.
+        # Restrict to the backward hemisphere (k_z < 0) for the cumulative
+        # interpretation.
+        def _kz_kperp(b):
+            kz = np.asarray(b.pz)
+            kperp = np.asarray(b.pperp)
+            mask = kz < 0
+            return kz[mask], kperp[mask]
 
-            ax.set_xlabel('k_z', fontsize=12)
-            ax.set_ylabel('k_perpendicular', fontsize=12)
-            ax.set_title('k_z vs k_perpendicular For Charged Particles', fontsize=14, fontweight='bold')
-            ax.legend(fontsize=11)
-            ax.grid(True, alpha=0.3)
+        kz_m, kp_m = _kz_kperp(mod)
+        kz_u, kp_u = _kz_kperp(unm)
+        if kz_m.size == 0 and kz_u.size == 0:
+            return None
 
+        H_m, _, _ = np.histogram2d(kz_m, kp_m,
+                                   bins=[self._KZ_EDGES, self._KPERP_EDGES])
+        H_u, _, _ = np.histogram2d(kz_u, kp_u,
+                                   bins=[self._KZ_EDGES, self._KPERP_EDGES])
 
-            plot_path = output_dir / "02_e_kz_kperp_charged_mod_unmod.png"
-            plt.savefig(plot_path, dpi=150, bbox_inches='tight')
-            plt.close()
-            plot_paths.append(plot_path)
+        n_ev_mod = max(self.total_events_mod, 1)
+        n_ev_unm = max(self.total_events_unm, 1)
+        D_m = H_m / n_ev_mod
+        D_u = H_u / n_ev_unm
 
+        vmax = max(D_m.max(), D_u.max(), 1e-6)
+        vmin = max(vmax * 1e-5,
+                   min(D_m[D_m > 0].min() if (D_m > 0).any() else vmax,
+                       D_u[D_u > 0].min() if (D_u > 0).any() else vmax))
+        norm = LogNorm(vmin=vmin, vmax=vmax)
 
-        # Plot 2_7: kz vs k_perp for protons
-        if len(self.kz_kperp_protons_mod) > 0:
-            fig, ax = plt.subplots(figsize=(10, 6))
+        ext = [self._KZ_EDGES[0], self._KZ_EDGES[-1],
+               self._KPERP_EDGES[0], self._KPERP_EDGES[-1]]
 
+        fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+        for ax, D, title in (
+            (axes[0], D_m, f"Modified: {species}"),
+            (axes[1], D_u, f"Unmodified: {species}"),
+        ):
+            im = ax.imshow(D.T, origin="lower", aspect="auto", extent=ext,
+                           cmap="viridis", norm=norm)
+            ax.set_xlabel(r"$k_z$  (GeV/c)")
+            ax.set_ylabel(r"$k_\perp$  (GeV/c)")
+            ax.set_title(title)
+            fig.colorbar(im, ax=ax, label="particles / event / bin")
 
-            kz_mod = [point[0] for point in self.kz_kperp_protons_mod]
-            kperp_mod = [point[1] for point in self.kz_kperp_protons_mod]
+        fig.suptitle(
+            f"Backward phase-space density ($k_z < 0$) -- {species}, target frame",
+            fontsize=13, fontweight="bold",
+        )
+        fig.savefig(path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        return path
 
-
-            ax.scatter(kz_mod, kperp_mod, s=8, alpha=0.5, label='Modified', color='red')
-
-
-            ax.set_xlabel('k_z', fontsize=12)
-            ax.set_ylabel('k_perpendicular', fontsize=12)
-            ax.set_title('k_z vs k_perpendicular For Protons', fontsize=14, fontweight='bold')
-            ax.legend(fontsize=11)
-            ax.grid(True, alpha=0.3)
-
-
-            plot_path = output_dir / "02_g_kz_kperp_protons_mod.png"
-            plt.savefig(plot_path, dpi=150, bbox_inches='tight')
-            plt.close()
-            plot_paths.append(plot_path)
-       
-        if len(self.kz_kperp_protons_unmod) > 0:
-            fig, ax = plt.subplots(figsize=(10, 6))
-
-
-            kz_unm = [point[0] for point in self.kz_kperp_protons_unmod]
-            kperp_unm = [point[1] for point in self.kz_kperp_protons_unmod]
-
-
-            ax.scatter(kz_unm, kperp_unm, s=8, alpha=0.5, label='Unmodified', color='blue')
-
-
-            ax.set_xlabel('k_z', fontsize=12)
-            ax.set_ylabel('k_perpendicular', fontsize=12)
-            ax.set_title('k_z vs k_perpendicular For Protons', fontsize=14, fontweight='bold')
-            ax.legend(fontsize=11)
-            ax.grid(True, alpha=0.3)
-
-
-            plot_path = output_dir / "02_g_kz_kperp_protons_unmod.png"
-            plt.savefig(plot_path, dpi=150, bbox_inches='tight')
-            plt.close()
-            plot_paths.append(plot_path)
-       
-        # Plot 2_7: kz vs k_perp for protons
-        if len(self.kz_kperp_protons_mod) > 0 and len(self.kz_kperp_protons_unmod) > 0:
-            fig, ax = plt.subplots(figsize=(10, 6))
-
-
-            kz_mod = [point[0] for point in self.kz_kperp_protons_mod]
-            kz_unm = [point[0] for point in self.kz_kperp_protons_unmod]
-
-
-            kperp_mod = [point[1] for point in self.kz_kperp_protons_mod]
-            kperp_unm = [point[1] for point in self.kz_kperp_protons_unmod]
-
-
-            ax.scatter(kz_mod, kperp_mod, s=8, alpha=0.5, label='Modified', color='red')
-            ax.scatter(kz_unm, kperp_unm, s=8, alpha=0.5, label='Unmodified', color='blue')
-
-
-            ax.set_xlabel('k_z', fontsize=12)
-            ax.set_ylabel('k_perpendicular', fontsize=12)
-            ax.set_title('k_z vs k_perpendicular For Protons', fontsize=14, fontweight='bold')
-            ax.legend(fontsize=11)
-            ax.grid(True, alpha=0.3)
-
-
-            plot_path = output_dir / "02_g_kz_kperp_protons_mod_unmod.png"
-            plt.savefig(plot_path, dpi=150, bbox_inches='tight')
-            plt.close()
-            plot_paths.append(plot_path)
-        
-        # Plot 4: Multiplicity Distribution
-        if len(self.multiplicity_mod) > 0 and len(self.multiplicity_unm) > 0:
-            fig, ax = plt.subplots(figsize=(10, 6))
-            bins = np.linspace(
-                min(min(self.multiplicity_mod), min(self.multiplicity_unm)),
-                max(max(self.multiplicity_mod), max(self.multiplicity_unm)),
-                50
-            )
-            ax.hist(self.multiplicity_mod, bins=bins, alpha=0.6, label='Modified', color='red', edgecolor='black')
-            ax.hist(self.multiplicity_unm, bins=bins, alpha=0.6, label='Unmodified', color='blue', edgecolor='black')
-            ax.set_xlabel('Particles per Event', fontsize=12)
-            ax.set_ylabel('Event Count', fontsize=12)
-            ax.set_title('Event Multiplicity Distribution', fontsize=14, fontweight='bold')
-            ax.legend(fontsize=11)
-            ax.grid(True, alpha=0.3)
-            plot_path = output_dir / "04_multiplicity_distribution.png"
-            plt.savefig(plot_path, dpi=150, bbox_inches='tight')
-            plt.close()
-            plot_paths.append(plot_path)
-        
-        return plot_paths
-    
-    
-    def get_statistics(self) -> Tuple[Dict]:
-        # Perform aggregated detection if not already done
+    # ------------------------------------------------------------------
+    # Statistics & lifecycle
+    # ------------------------------------------------------------------
+    def get_statistics(self) -> Dict:
         self._finalize_and_detect()
-        
-        # Build statistics dictionary
-        stats = {
-            'total_events_modified': int(self.total_events_mod),
-            'total_events_unmodified': int(self.total_events_unm),
-            'total_particles_modified': int(self.total_particles_mod),
-            'total_particles_unmodified': int(self.total_particles_unm),
-            'avg_multiplicity_modified': self.total_particles_mod / max(self.total_events_mod, 1),
-            'avg_multiplicity_unmodified': self.total_particles_unm / max(self.total_events_unm, 1),
-            'n_angular_samples_modified': len(self.theta_dist_mod),
-            'n_angular_samples_unmodified': len(self.theta_dist_unm),
+
+        n_ev_mod = max(self.total_events_mod, 1)
+        n_ev_unm = max(self.total_events_unm, 1)
+
+        stats: Dict = {
+            "total_events_modified": int(self.total_events_mod),
+            "total_events_unmodified": int(self.total_events_unm),
+            "total_particles_modified": int(self.total_particles_mod),
+            "total_particles_unmodified": int(self.total_particles_unm),
+            "avg_multiplicity_modified": self.total_particles_mod / n_ev_mod,
+            "avg_multiplicity_unmodified": self.total_particles_unm / n_ev_unm,
+            "cumulative_threshold_xcum": self._XCUM_THRESHOLD,
+            "frame": "target rest frame",
         }
-        
-        # Return tuple: (stats)
+
+        for species in ("charged", "protons"):
+            mod = self._buckets[species]["mod"]
+            unm = self._buckets[species]["unm"]
+
+            xcum_mod = np.asarray(mod.xcum)
+            xcum_unm = np.asarray(unm.xcum)
+
+            n_total_mod = xcum_mod.size
+            n_total_unm = xcum_unm.size
+            n_cum_mod = int(np.sum(xcum_mod > self._XCUM_THRESHOLD))
+            n_cum_unm = int(np.sum(xcum_unm > self._XCUM_THRESHOLD))
+
+            ev_nmod = np.asarray(mod.n_cum_per_event, dtype=float)
+            ev_nunm = np.asarray(unm.n_cum_per_event, dtype=float)
+
+            stats[species] = {
+                "n_total_mod": int(n_total_mod),
+                "n_total_unm": int(n_total_unm),
+                "n_cum_mod": n_cum_mod,
+                "n_cum_unm": n_cum_unm,
+                "frac_cum_mod": (n_cum_mod / n_total_mod) if n_total_mod else 0.0,
+                "frac_cum_unm": (n_cum_unm / n_total_unm) if n_total_unm else 0.0,
+                "n_cum_per_event_mod_mean": float(ev_nmod.mean()) if ev_nmod.size else 0.0,
+                "n_cum_per_event_unm_mean": float(ev_nunm.mean()) if ev_nunm.size else 0.0,
+                "n_cum_per_event_mod_std":  float(ev_nmod.std())  if ev_nmod.size else 0.0,
+                "n_cum_per_event_unm_std":  float(ev_nunm.std())  if ev_nunm.size else 0.0,
+                "xcum_max_mod": float(xcum_mod.max()) if n_total_mod else 0.0,
+                "xcum_max_unm": float(xcum_unm.max()) if n_total_unm else 0.0,
+            }
+
         return stats
-    
-    
+
     def _finalize_and_detect(self) -> None:
         if self._finalized:
-            return  # Already done
-        
+            return
         self._finalized = True
 
-
     def reset(self) -> None:
-        """Reset analyzer state for reuse."""
         self.total_events_mod = 0
         self.total_events_unm = 0
         self.total_particles_mod = 0
         self.total_particles_unm = 0
         self.multiplicity_mod = []
         self.multiplicity_unm = []
-        self.theta_dist_mod = []
-        self.theta_dist_unm = []
+        self._buckets = {
+            "charged": {"mod": _SpeciesBucket(), "unm": _SpeciesBucket()},
+            "protons": {"mod": _SpeciesBucket(), "unm": _SpeciesBucket()},
+        }
         self._finalized = False
-        self.kz_kperp_charged_mod = []
-        self.kz_kperp_charged_unmod = []
-        self.kz_kperp_protons_mod = []
-        self.kz_kperp_protons_unmod = []
