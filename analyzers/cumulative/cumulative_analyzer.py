@@ -27,6 +27,14 @@ The plots produced here are designed to make the cumulative effect
        in a single event, mod vs. unm.
     5. Backward-only k_z vs k_perp density heatmap (sanity check, comparable
        to the older scatter plot).
+    6. Exponential-slope fit of the cumulative tail
+            dN/dx_cum  ~  exp(-x_cum / x_0)
+       overlaid on plot (2).  The Leksin/Baldin slope x_0 ~ 0.13-0.18 is the
+       textbook signature of cumulative production.
+    7. Proton fraction vs x_cum:
+            N_p(x_cum) / N_charged(x_cum)
+       Real cumulative data shows the proton fraction GROW with x_cum because
+       flucton breakup favours baryons over mesons.  Mod vs. unm overlay.
 
 All plots are produced separately for charged hadrons and for protons.
 """
@@ -94,6 +102,11 @@ class CumulativeAnalyzer:
     # Cumulative threshold.
     _XCUM_THRESHOLD = 1.0
 
+    # Exponential-slope fit window (x_cum).  Avoid the soft shoulder near
+    # x_cum ~ 1 and the noisy far tail above ~2.2.
+    _FIT_XMIN = 1.2
+    _FIT_XMAX = 2.2
+
     def __init__(self) -> None:
         # Event / particle counters (kept for backward-compat in stats)
         self.total_events_mod = 0
@@ -108,6 +121,10 @@ class CumulativeAnalyzer:
             "charged": {"mod": _SpeciesBucket(), "unm": _SpeciesBucket()},
             "protons": {"mod": _SpeciesBucket(), "unm": _SpeciesBucket()},
         }
+
+        # Slope fits filled by the 1D plotter; consumed by get_statistics().
+        # Keyed by (species, tag) -> dict(x0, x0_err, amplitude, n_points).
+        self._fit_results: Dict[Tuple[str, str], Dict[str, float]] = {}
 
         self._finalized = False
 
@@ -228,6 +245,14 @@ class CumulativeAnalyzer:
                 output_dir / f"04_{prefix}_kz_kperp_density.png", plt, LogNorm,
             ))
 
+        # 5) Proton fraction vs x_cum (mod & unm).  Single plot, both species
+        #    information is implicit (numerator: protons, denominator: charged).
+        frac_path = self._plot_proton_fraction(
+            output_dir / "05_proton_fraction_vs_xcum.png", plt,
+        )
+        if frac_path is not None:
+            out.append(frac_path)
+
         return [p for p in out if p is not None]
 
     # ------------------------------------------------------------------
@@ -308,6 +333,16 @@ class CumulativeAnalyzer:
         y_mod = h_mod / (n_ev_mod * widths)
         y_unm = h_unm / (n_ev_unm * widths)
 
+        # ----- Exponential-slope fit in the cumulative window ------------
+        fit_mod = self._fit_exponential_tail(centers, y_mod, h_mod)
+        fit_unm = self._fit_exponential_tail(centers, y_unm, h_unm)
+        # cache for get_statistics()
+        species_key = self._species_key(species)
+        if fit_mod is not None:
+            self._fit_results[(species_key, "mod")] = fit_mod
+        if fit_unm is not None:
+            self._fit_results[(species_key, "unm")] = fit_unm
+
         fig, (ax_top, ax_bot) = plt.subplots(
             2, 1, figsize=(10, 7), sharex=True,
             gridspec_kw={"height_ratios": [3, 1], "hspace": 0.05},
@@ -317,14 +352,31 @@ class CumulativeAnalyzer:
                     label="Unmodified", lw=2)
         ax_top.step(centers, y_mod, where="mid", color="tab:red",
                     label="Modified", lw=2)
+
+        # Overlay exponential fits.
+        x_fit = np.linspace(self._FIT_XMIN, self._FIT_XMAX, 50)
+        if fit_unm is not None:
+            y_fit = fit_unm["amplitude"] * np.exp(-x_fit / fit_unm["x0"])
+            ax_top.plot(x_fit, y_fit, color="tab:blue", ls="--", lw=1.8,
+                        label=fr"unm fit: $x_0$ = {fit_unm['x0']:.3f}"
+                              fr" $\pm$ {fit_unm['x0_err']:.3f}")
+        if fit_mod is not None:
+            y_fit = fit_mod["amplitude"] * np.exp(-x_fit / fit_mod["x0"])
+            ax_top.plot(x_fit, y_fit, color="tab:red", ls="--", lw=1.8,
+                        label=fr"mod fit: $x_0$ = {fit_mod['x0']:.3f}"
+                              fr" $\pm$ {fit_mod['x0_err']:.3f}")
+        # Shade the fit window
+        ax_top.axvspan(self._FIT_XMIN, self._FIT_XMAX, color="gold", alpha=0.10,
+                       label=fr"fit window [{self._FIT_XMIN}, {self._FIT_XMAX}]")
+
         ax_top.axvline(1.0, color="k", ls="--", lw=1, alpha=0.5)
         ax_top.set_yscale("log")
         ax_top.set_ylabel(r"$\frac{1}{N_{\mathrm{ev}}}\,dN/dx_{\mathrm{cum}}$")
         ax_top.set_title(
-            f"Cumulative spectrum -- {species}, target frame",
+            f"Cumulative spectrum with exponential fit -- {species}, target frame",
             fontweight="bold",
         )
-        ax_top.legend()
+        ax_top.legend(fontsize=9, loc="upper right")
         ax_top.grid(True, which="both", alpha=0.3)
         ax_top.text(1.02, ax_top.get_ylim()[1] * 0.5,
                     "cumulative\nregion", color="black",
@@ -340,6 +392,121 @@ class CumulativeAnalyzer:
         ax_bot.set_ylabel("mod / unm")
         ax_bot.set_ylim(0, 4)
         ax_bot.grid(True, alpha=0.3)
+
+        fig.savefig(path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        return path
+
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _species_key(species_label: str) -> str:
+        # Convert pretty label back to bucket key.
+        return "protons" if "proton" in species_label.lower() else "charged"
+
+    # ------------------------------------------------------------------
+    def _fit_exponential_tail(self, centers, y, counts):
+        """
+        Fit  log(y) = log(A) - x/x0  on  x in [_FIT_XMIN, _FIT_XMAX].
+
+        Bins are weighted by sqrt(N) (Poisson) so empty / single-count bins
+        in the far tail don't dominate the slope.
+        Returns dict(x0, x0_err, amplitude, n_points) or None if fit fails.
+        """
+        centers = np.asarray(centers, dtype=float)
+        y = np.asarray(y, dtype=float)
+        counts = np.asarray(counts, dtype=float)
+
+        mask = (centers >= self._FIT_XMIN) & (centers <= self._FIT_XMAX) & (y > 0) & (counts > 0)
+        if mask.sum() < 3:
+            return None
+
+        x = centers[mask]
+        ly = np.log(y[mask])
+        # Weight: sqrt(N) -> log-error sigma_log = 1/sqrt(N).  Use w = sqrt(N).
+        w = np.sqrt(counts[mask])
+
+        # Weighted linear fit:  ly = a + b * x   ;  x0 = -1/b
+        # numpy.polyfit supports weights.
+        try:
+            coeffs, cov = np.polyfit(x, ly, 1, w=w, cov=True)
+        except (ValueError, np.linalg.LinAlgError):
+            return None
+
+        b, a = coeffs[0], coeffs[1]
+        if b >= 0:                       # not a falling exponential -> drop
+            return None
+        x0 = -1.0 / b
+        # error on x0 from error on b via 1-sigma propagation: dx0 = |x0^2 * db|
+        try:
+            db = float(np.sqrt(cov[0, 0]))
+        except (IndexError, ValueError):
+            db = 0.0
+        x0_err = abs(x0 * x0 * db)
+        amplitude = float(np.exp(a))
+        return {
+            "x0":        float(x0),
+            "x0_err":    float(x0_err),
+            "amplitude": amplitude,
+            "n_points":  int(mask.sum()),
+        }
+
+    # ------------------------------------------------------------------
+    def _plot_proton_fraction(self, path, plt):
+        """
+        Per-bin proton fraction  N_p(x_cum) / N_charged(x_cum)  for mod and unm.
+
+        Real cumulative-region data is baryon-rich; the modification should
+        push this ratio up at large x_cum.
+        """
+        # Sanity
+        ch_mod = self._buckets["charged"]["mod"]
+        ch_unm = self._buckets["charged"]["unm"]
+        pr_mod = self._buckets["protons"]["mod"]
+        pr_unm = self._buckets["protons"]["unm"]
+        if not ch_mod.xcum or not ch_unm.xcum:
+            return None
+
+        h_ch_mod, edges = np.histogram(ch_mod.xcum, bins=self._XCUM_EDGES)
+        h_ch_unm, _    = np.histogram(ch_unm.xcum, bins=self._XCUM_EDGES)
+        h_pr_mod, _    = np.histogram(pr_mod.xcum, bins=self._XCUM_EDGES)
+        h_pr_unm, _    = np.histogram(pr_unm.xcum, bins=self._XCUM_EDGES)
+        centers = 0.5 * (edges[:-1] + edges[1:])
+
+        # Suppress bins with too few charged entries to avoid spike noise.
+        N_MIN = 5
+        with np.errstate(divide="ignore", invalid="ignore"):
+            f_mod = np.where(h_ch_mod >= N_MIN, h_pr_mod / h_ch_mod, np.nan)
+            f_unm = np.where(h_ch_unm >= N_MIN, h_pr_unm / h_ch_unm, np.nan)
+            # Binomial std: sqrt(f*(1-f)/N)
+            err_mod = np.where(h_ch_mod >= N_MIN,
+                               np.sqrt(np.clip(f_mod * (1 - f_mod), 0, None) / np.maximum(h_ch_mod, 1)),
+                               np.nan)
+            err_unm = np.where(h_ch_unm >= N_MIN,
+                               np.sqrt(np.clip(f_unm * (1 - f_unm), 0, None) / np.maximum(h_ch_unm, 1)),
+                               np.nan)
+
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.errorbar(centers, f_unm, yerr=err_unm, fmt="o-", color="tab:blue",
+                    ms=4, lw=1.5, capsize=2, label="Unmodified")
+        ax.errorbar(centers, f_mod, yerr=err_mod, fmt="s-", color="tab:red",
+                    ms=4, lw=1.5, capsize=2, label="Modified")
+        ax.axvline(1.0, color="k", ls="--", lw=1, alpha=0.5,
+                   label=r"$x_{\mathrm{cum}} = 1$")
+        ax.axhline(0.5, color="gray", ls=":", lw=1, alpha=0.7,
+                   label="naive equipartition (p:pi+:pi- 1:1:1)")
+        ax.set_xlabel(r"$x_{\mathrm{cum}} = (E - p_z)/m_N$")
+        ax.set_ylabel(r"$N_{\mathrm{p}}\,/\,N_{\mathrm{charged}}$")
+        ax.set_title(
+            "Proton fraction vs cumulative variable (target frame)",
+            fontweight="bold",
+        )
+        ax.set_ylim(0, 1.05)
+        ax.set_xlim(0, 3.0)
+        ax.legend(fontsize=9, loc="upper left")
+        ax.grid(True, alpha=0.3)
+        ax.text(1.05, 0.05,
+                "baryon enrichment expected here\nfor flucton-driven yield",
+                fontsize=9, alpha=0.7)
 
         fig.savefig(path, dpi=150, bbox_inches="tight")
         plt.close(fig)
@@ -479,6 +646,19 @@ class CumulativeAnalyzer:
                 "xcum_max_unm": float(xcum_unm.max()) if n_total_unm else 0.0,
             }
 
+            # Exponential slope fits (filled by plot_distributions). Only
+            # present after plotting; absent if plot_distributions wasn't
+            # called or fit failed.
+            fit_mod = self._fit_results.get((species, "mod"))
+            fit_unm = self._fit_results.get((species, "unm"))
+            if fit_mod is not None:
+                stats[species]["xcum_slope_x0_mod"]     = fit_mod["x0"]
+                stats[species]["xcum_slope_x0_err_mod"] = fit_mod["x0_err"]
+            if fit_unm is not None:
+                stats[species]["xcum_slope_x0_unm"]     = fit_unm["x0"]
+                stats[species]["xcum_slope_x0_err_unm"] = fit_unm["x0_err"]
+            stats[species]["xcum_slope_fit_window"] = [self._FIT_XMIN, self._FIT_XMAX]
+
         return stats
 
     def _finalize_and_detect(self) -> None:
@@ -497,4 +677,5 @@ class CumulativeAnalyzer:
             "charged": {"mod": _SpeciesBucket(), "unm": _SpeciesBucket()},
             "protons": {"mod": _SpeciesBucket(), "unm": _SpeciesBucket()},
         }
+        self._fit_results = {}
         self._finalized = False
