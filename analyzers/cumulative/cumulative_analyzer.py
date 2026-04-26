@@ -31,10 +31,15 @@ The plots produced here are designed to make the cumulative effect
             dN/dx_cum  ~  exp(-x_cum / x_0)
        overlaid on plot (2).  The Leksin/Baldin slope x_0 ~ 0.13-0.18 is the
        textbook signature of cumulative production.
-    7. Proton fraction vs x_cum:
-            N_p(x_cum) / N_charged(x_cum)
+    7. Composition fractions vs x_cum (three diagnostic plots):
+         (a) Proton fraction:  N_p / N_charged
+         (b) Baryon-counting fraction:  N_(p+flucton) / N_charged
+             A flucton is treated as a multi-proton cluster, so this plot
+             measures the *true* baryon content delivered by the modification.
+         (c) Stacked species composition vs x_cum -- pions, muons, protons,
+             fluctons -- mod and unm side by side.
        Real cumulative data shows the proton fraction GROW with x_cum because
-       flucton breakup favours baryons over mesons.  Mod vs. unm overlay.
+       flucton breakup favours baryons over mesons.
 
 All plots are produced separately for charged hadrons and for protons.
 """
@@ -47,7 +52,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from models.ions import CHARGED_PDGIDS, PROTONS
+from models.ions import CHARGED_PDGIDS, PROTONS, FLUCTONS, PIONS, MUONS
 
 try:
     from models.particle import Particle
@@ -116,10 +121,17 @@ class CumulativeAnalyzer:
         self.multiplicity_mod: List[int] = []
         self.multiplicity_unm: List[int] = []
 
-        # species: { "charged", "protons" }, dataset: { "mod", "unm" }
+        # species: { "charged", "protons", "fluctons", "pions", "muons" }
+        # dataset: { "mod", "unm" }
+        # Note: "charged" is the headline species (used for ratios denominator);
+        # "fluctons", "pions", "muons" are auxiliary, only filled to support
+        # composition / fraction plots.
         self._buckets: Dict[str, Dict[str, _SpeciesBucket]] = {
-            "charged": {"mod": _SpeciesBucket(), "unm": _SpeciesBucket()},
-            "protons": {"mod": _SpeciesBucket(), "unm": _SpeciesBucket()},
+            "charged":  {"mod": _SpeciesBucket(), "unm": _SpeciesBucket()},
+            "protons":  {"mod": _SpeciesBucket(), "unm": _SpeciesBucket()},
+            "fluctons": {"mod": _SpeciesBucket(), "unm": _SpeciesBucket()},
+            "pions":    {"mod": _SpeciesBucket(), "unm": _SpeciesBucket()},
+            "muons":    {"mod": _SpeciesBucket(), "unm": _SpeciesBucket()},
         }
 
         # Slope fits filled by the 1D plotter; consumed by get_statistics().
@@ -155,47 +167,50 @@ class CumulativeAnalyzer:
     def _fill_dataset(self, batch: List[List[Particle]], tag: str) -> None:
         for event in batch:
             if not event:
-                # Still count "0 cumulative particles" for an empty event so
-                # that the per-event histogram averages correctly.
-                self._buckets["charged"][tag].n_cum_per_event.append(0)
-                self._buckets["protons"][tag].n_cum_per_event.append(0)
+                # Still count "0 cumulative particles" for empty events so
+                # the per-event histogram averages correctly.
+                for sp in self._buckets:
+                    self._buckets[sp][tag].n_cum_per_event.append(0)
                 continue
 
-            n_cum_charged = 0
-            n_cum_protons = 0
+            n_cum = {sp: 0 for sp in self._buckets}
 
             for p in event:
                 # input data is already in target rest frame
                 if p.E <= self._E_MIN:
                     continue
                 pid = p.particle_id
-                is_charged = pid in CHARGED_PDGIDS
-                is_proton = pid in PROTONS
-                if not (is_charged or is_proton):
+
+                if pid not in CHARGED_PDGIDS:
                     continue
 
                 pperp = float(np.hypot(p.px, p.py))
                 pz = float(p.pz)
                 xcum = (p.E - pz) / M_N
 
-                if is_charged:
-                    bkt = self._buckets["charged"][tag]
+                # Always fill the headline "charged" bucket
+                tags_for_this_particle = ["charged"]
+                if pid in PROTONS:
+                    tags_for_this_particle.append("protons")
+                if pid in FLUCTONS:
+                    tags_for_this_particle.append("fluctons")
+                if pid in PIONS:
+                    tags_for_this_particle.append("pions")
+                if pid in MUONS:
+                    tags_for_this_particle.append("muons")
+                for sp in tags_for_this_particle:
+                    bkt = self._buckets[sp][tag]
+
+                for sp in tags_for_this_particle:
+                    bkt = self._buckets[sp][tag]
                     bkt.xcum.append(xcum)
                     bkt.pperp.append(pperp)
                     bkt.pz.append(pz)
                     if xcum > self._XCUM_THRESHOLD:
-                        n_cum_charged += 1
+                        n_cum[sp] += 1
 
-                if is_proton:
-                    bkt = self._buckets["protons"][tag]
-                    bkt.xcum.append(xcum)
-                    bkt.pperp.append(pperp)
-                    bkt.pz.append(pz)
-                    if xcum > self._XCUM_THRESHOLD:
-                        n_cum_protons += 1
-
-            self._buckets["charged"][tag].n_cum_per_event.append(n_cum_charged)
-            self._buckets["protons"][tag].n_cum_per_event.append(n_cum_protons)
+            for sp in self._buckets:
+                self._buckets[sp][tag].n_cum_per_event.append(n_cum[sp])
 
     # ------------------------------------------------------------------
     # Plotting
@@ -245,13 +260,26 @@ class CumulativeAnalyzer:
                 output_dir / f"04_{prefix}_kz_kperp_density.png", plt, LogNorm,
             ))
 
-        # 5) Proton fraction vs x_cum (mod & unm).  Single plot, both species
-        #    information is implicit (numerator: protons, denominator: charged).
+        # 5) Proton fraction vs x_cum (N_p / N_charged).
         frac_path = self._plot_proton_fraction(
             output_dir / "05_proton_fraction_vs_xcum.png", plt,
         )
         if frac_path is not None:
             out.append(frac_path)
+        
+        # 6) Baryon-counting fraction vs x_cum (N_(p+flucton) / N_charged).
+        bf_path = self._plot_baryon_fraction(
+            output_dir / "06_baryon_fraction_vs_xcum.png", plt,
+        )
+        if bf_path is not None:
+            out.append(bf_path)
+            
+        # 7) Stacked species composition vs x_cum (mod | unm side-by-side).
+        comp_path = self._plot_composition(
+            output_dir / "07_composition_vs_xcum.png", plt,
+        )
+        if comp_path is not None:
+            out.append(comp_path)
 
         return [p for p in out if p is not None]
 
@@ -451,44 +479,51 @@ class CumulativeAnalyzer:
         }
 
     # ------------------------------------------------------------------
+    def _bin_xcum(self, species: str, tag: str) -> np.ndarray:
+        """Return histogram of x_cum for one (species, tag) bucket."""
+        return np.histogram(
+            self._buckets[species][tag].xcum, bins=self._XCUM_EDGES,
+        )[0]
+    @staticmethod
+    def _binomial_fraction(num: np.ndarray, den: np.ndarray, n_min: int = 5):
+        """
+        Return (fraction, error) per bin with binomial errors.
+        Bins with denominator < n_min are returned as NaN.
+        """
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ok = den >= n_min
+            f = np.where(ok, num / np.maximum(den, 1), np.nan)
+            sig = np.where(
+                ok,
+                np.sqrt(np.clip(f * (1.0 - f), 0, None) / np.maximum(den, 1)),
+                np.nan,
+            )
+        return f, sig
+    
+    # ------------------------------------------------------------------
     def _plot_proton_fraction(self, path, plt):
         """
         Per-bin proton fraction  N_p(x_cum) / N_charged(x_cum)  for mod and unm.
-
-        Real cumulative-region data is baryon-rich; the modification should
-        push this ratio up at large x_cum.
         """
         # Sanity
         ch_mod = self._buckets["charged"]["mod"]
         ch_unm = self._buckets["charged"]["unm"]
-        pr_mod = self._buckets["protons"]["mod"]
-        pr_unm = self._buckets["protons"]["unm"]
         if not ch_mod.xcum or not ch_unm.xcum:
             return None
 
-        h_ch_mod, edges = np.histogram(ch_mod.xcum, bins=self._XCUM_EDGES)
-        h_ch_unm, _    = np.histogram(ch_unm.xcum, bins=self._XCUM_EDGES)
-        h_pr_mod, _    = np.histogram(pr_mod.xcum, bins=self._XCUM_EDGES)
-        h_pr_unm, _    = np.histogram(pr_unm.xcum, bins=self._XCUM_EDGES)
-        centers = 0.5 * (edges[:-1] + edges[1:])
+        h_ch_mod = self._bin_xcum("charged", "mod")
+        h_ch_unm = self._bin_xcum("charged", "unm")
+        h_pr_mod = self._bin_xcum("protons", "mod")
+        h_pr_unm = self._bin_xcum("protons", "unm")
+        centers = 0.5 * (self._XCUM_EDGES[:-1] + self._XCUM_EDGES[1:])
 
-        # Suppress bins with too few charged entries to avoid spike noise.
-        N_MIN = 5
-        with np.errstate(divide="ignore", invalid="ignore"):
-            f_mod = np.where(h_ch_mod >= N_MIN, h_pr_mod / h_ch_mod, np.nan)
-            f_unm = np.where(h_ch_unm >= N_MIN, h_pr_unm / h_ch_unm, np.nan)
-            # Binomial std: sqrt(f*(1-f)/N)
-            err_mod = np.where(h_ch_mod >= N_MIN,
-                               np.sqrt(np.clip(f_mod * (1 - f_mod), 0, None) / np.maximum(h_ch_mod, 1)),
-                               np.nan)
-            err_unm = np.where(h_ch_unm >= N_MIN,
-                               np.sqrt(np.clip(f_unm * (1 - f_unm), 0, None) / np.maximum(h_ch_unm, 1)),
-                               np.nan)
+        f_mod, e_mod = self._binomial_fraction(h_pr_mod, h_ch_mod)
+        f_unm, e_unm = self._binomial_fraction(h_pr_unm, h_ch_unm)
 
         fig, ax = plt.subplots(figsize=(10, 6))
-        ax.errorbar(centers, f_unm, yerr=err_unm, fmt="o-", color="tab:blue",
+        ax.errorbar(centers, f_unm, yerr=e_unm, fmt="o-", color="tab:blue",
                     ms=4, lw=1.5, capsize=2, label="Unmodified")
-        ax.errorbar(centers, f_mod, yerr=err_mod, fmt="s-", color="tab:red",
+        ax.errorbar(centers, f_mod, yerr=e_mod, fmt="s-", color="tab:red",
                     ms=4, lw=1.5, capsize=2, label="Modified")
         ax.axvline(1.0, color="k", ls="--", lw=1, alpha=0.5,
                    label=r"$x_{\mathrm{cum}} = 1$")
@@ -511,7 +546,134 @@ class CumulativeAnalyzer:
         fig.savefig(path, dpi=150, bbox_inches="tight")
         plt.close(fig)
         return path
-
+    
+    # ------------------------------------------------------------------
+    def _plot_baryon_fraction(self, path, plt):
+        """
+        Per-bin baryon-counting fraction  N_(p+flucton)(x_cum) / N_charged(x_cum).
+        A flucton in our event record is a multi-proton cluster, so this
+        plot estimates the *true* baryon content of the charged sample
+        at each x_cum.  Compared with plot 05, the only difference is the
+        flucton contribution: in mod we should see a clear lift in the
+        cumulative region wherever fluctons populate.
+        """
+        ch_mod = self._buckets["charged"]["mod"]
+        ch_unm = self._buckets["charged"]["unm"]
+        if not ch_mod.xcum or not ch_unm.xcum:
+            return None
+        h_ch_mod = self._bin_xcum("charged", "mod")
+        h_ch_unm = self._bin_xcum("charged", "unm")
+        h_pr_mod = self._bin_xcum("protons", "mod")
+        h_pr_unm = self._bin_xcum("protons", "unm")
+        h_fl_mod = self._bin_xcum("fluctons", "mod")
+        h_fl_unm = self._bin_xcum("fluctons", "unm")
+        centers = 0.5 * (self._XCUM_EDGES[:-1] + self._XCUM_EDGES[1:])
+        # Numerator counts a flucton as one baryon-like object; we could
+        # instead weight by some integer (constituent count), but our event
+        # record exposes one entry per flucton with its own four-momentum,
+        # so a one-for-one count is the natural choice for a phase-space
+        # fraction plot.
+        num_mod = h_pr_mod + h_fl_mod
+        num_unm = h_pr_unm + h_fl_unm
+        f_mod, e_mod = self._binomial_fraction(num_mod, h_ch_mod)
+        f_unm, e_unm = self._binomial_fraction(num_unm, h_ch_unm)
+        # Also overlay protons-only fractions in faint colour for direct
+        # comparison with plot 05 (so the flucton lift is visible).
+        fp_mod, _ = self._binomial_fraction(h_pr_mod, h_ch_mod)
+        fp_unm, _ = self._binomial_fraction(h_pr_unm, h_ch_unm)
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.errorbar(centers, f_unm, yerr=e_unm, fmt="o-", color="tab:blue",
+                    ms=4, lw=1.5, capsize=2,
+                    label=r"Unmodified  $(p+\mathrm{flucton})/\mathrm{charged}$")
+        ax.errorbar(centers, f_mod, yerr=e_mod, fmt="s-", color="tab:red",
+                    ms=4, lw=1.5, capsize=2,
+                    label=r"Modified  $(p+\mathrm{flucton})/\mathrm{charged}$")
+        ax.plot(centers, fp_unm, color="tab:blue", ls=":", lw=1.2, alpha=0.6,
+                label=r"Unmodified  $p/\mathrm{charged}$ (ref.)")
+        ax.plot(centers, fp_mod, color="tab:red", ls=":", lw=1.2, alpha=0.6,
+                label=r"Modified  $p/\mathrm{charged}$ (ref.)")
+        ax.axvline(1.0, color="k", ls="--", lw=1, alpha=0.5,
+                   label=r"$x_{\mathrm{cum}} = 1$")
+        ax.axhline(0.5, color="gray", ls=":", lw=0.8, alpha=0.5)
+        ax.set_xlabel(r"$x_{\mathrm{cum}} = (E - p_z)/m_N$")
+        ax.set_ylabel(r"$N_{\mathrm{p}+\mathrm{flucton}}\,/\,N_{\mathrm{charged}}$")
+        ax.set_title(
+            "Baryon-counting fraction vs cumulative variable (target frame)",
+            fontweight="bold",
+        )
+        ax.set_ylim(0, 1.05)
+        ax.set_xlim(0, 3.0)
+        ax.legend(fontsize=8, loc="upper left")
+        ax.grid(True, alpha=0.3)
+        ax.text(1.05, 0.05,
+                "flucton lift = mod (solid)  -  mod (dotted)\n"
+                "this is the effect of the patch on baryon content",
+                fontsize=9, alpha=0.7)
+        fig.savefig(path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        return path
+    # ------------------------------------------------------------------
+    def _plot_composition(self, path, plt):
+        """
+        Stacked species composition vs x_cum.  Two side-by-side panels:
+        modified | unmodified.  At each x_cum bin, the bar is split into
+        fractional contributions of:  pions, muons, protons, fluctons.
+        """
+        ch_mod = self._buckets["charged"]["mod"]
+        ch_unm = self._buckets["charged"]["unm"]
+        if not ch_mod.xcum or not ch_unm.xcum:
+            return None
+        species_order = [
+            ("pions",    r"$\pi^{\pm}$",  "#5fa8d3"),
+            ("muons",    r"$\mu^{\pm}$",  "#a06ab8"),
+            ("protons",  r"$p$",          "#e07a5f"),
+            ("fluctons", r"flucton",      "#3d405b"),
+        ]
+        centers = 0.5 * (self._XCUM_EDGES[:-1] + self._XCUM_EDGES[1:])
+        widths  = np.diff(self._XCUM_EDGES)
+        # Suppress bins with very low statistics in either dataset (looks
+        # noisy and is not meaningful).
+        N_MIN = 5
+        def _frac_table(tag: str):
+            """Return (h_charged, dict[species]->fraction array)."""
+            h_ch = self._bin_xcum("charged", tag).astype(float)
+            ok = h_ch >= N_MIN
+            fracs = {}
+            for sp, _, _ in species_order:
+                h = self._bin_xcum(sp, tag).astype(float)
+                fracs[sp] = np.where(ok, h / np.maximum(h_ch, 1), np.nan)
+            return h_ch, fracs, ok
+        h_ch_mod, fr_mod, ok_mod = _frac_table("mod")
+        h_ch_unm, fr_unm, ok_unm = _frac_table("unm")
+        fig, axes = plt.subplots(1, 2, figsize=(14, 5.2), sharey=True,
+                                 gridspec_kw={"wspace": 0.05})
+        for ax, fracs, ok, title in (
+            (axes[0], fr_mod, ok_mod, "Modified"),
+            (axes[1], fr_unm, ok_unm, "Unmodified"),
+        ):
+            bottom = np.zeros_like(centers, dtype=float)
+            for sp, label, color in species_order:
+                vals = np.where(ok, fracs[sp], 0.0)
+                ax.bar(centers, vals, width=widths * 0.95,
+                       bottom=bottom, color=color, label=label,
+                       edgecolor="none")
+                bottom = bottom + np.nan_to_num(vals, nan=0.0)
+            ax.axvline(1.0, color="white", ls="--", lw=1.2, alpha=0.85)
+            ax.set_xlim(0, 3.0)
+            ax.set_ylim(0, 1.0)
+            ax.set_xlabel(r"$x_{\mathrm{cum}} = (E - p_z)/m_N$")
+            ax.set_title(title, fontweight="bold")
+            ax.grid(True, axis="y", alpha=0.3)
+        axes[0].set_ylabel("fraction of charged sample")
+        axes[1].legend(loc="upper right", fontsize=9, framealpha=0.95)
+        fig.suptitle(
+            "Species composition of charged hadrons vs $x_{\\mathrm{cum}}$"
+            "  (target frame)",
+            fontsize=13, fontweight="bold",
+        )
+        fig.savefig(path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        return path
     # ------------------------------------------------------------------
     def _plot_ncum_per_event(self, mod, unm, species, path, plt):
         nmod = np.asarray(mod.n_cum_per_event, dtype=int)
@@ -674,8 +836,11 @@ class CumulativeAnalyzer:
         self.multiplicity_mod = []
         self.multiplicity_unm = []
         self._buckets = {
-            "charged": {"mod": _SpeciesBucket(), "unm": _SpeciesBucket()},
-            "protons": {"mod": _SpeciesBucket(), "unm": _SpeciesBucket()},
+            "charged":  {"mod": _SpeciesBucket(), "unm": _SpeciesBucket()},
+            "protons":  {"mod": _SpeciesBucket(), "unm": _SpeciesBucket()},
+            "fluctons": {"mod": _SpeciesBucket(), "unm": _SpeciesBucket()},
+            "pions":    {"mod": _SpeciesBucket(), "unm": _SpeciesBucket()},
+            "muons":    {"mod": _SpeciesBucket(), "unm": _SpeciesBucket()},
         }
         self._fit_results = {}
         self._finalized = False
