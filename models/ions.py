@@ -15,10 +15,15 @@ PROTONS = [
     2212,
 ]
 
+FLUCTONS = [
+    9902220,
+]
+
 CHARGED_PDGIDS = [
     *MUONS,
     *PIONS,
-    *PROTONS
+    *PROTONS,
+    *FLUCTONS
 ]
 
 

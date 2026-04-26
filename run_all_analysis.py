@@ -10,11 +10,7 @@ import multiprocessing as mp
 import argparse
 import gc
 
-from utils.lab_transofrmer import CMToLabTransformer
-
-
 try:
-    from analyzers.general.comparison_analyzer import RunComparisonAnalyzer
     from utils.collision_system_detector import CollisionSystemDetector
     from analyzers.general.aggregate_analyzer import AggregateAnalyzer
     from utils.progress_display import ProgressDisplay
@@ -108,7 +104,7 @@ class UnifiedAnalysisEngine:
         batch_size: int,
         system_info: Dict = None,
         progress_callback=None,
-    ) -> Tuple[AggregateAnalyzer, AggregateAnalyzer, CumulativeAnalyzer, int, Dict]:
+    ) -> Tuple[CumulativeAnalyzer, int, Dict]:
         """
         Process modified and unmodified files in parallel batches (comparison mode).
         
@@ -123,32 +119,9 @@ class UnifiedAnalysisEngine:
             if not system_info:
                 system_info = {}
         
-        # Initialize aggregators for both datasets
-        agg_mod = AggregateAnalyzer(
-            system_label=system_info.get('label'),
-            sqrt_s_NN=system_info.get('sqrt_s_NN'),
-            A1=system_info.get('A1'),
-            Z1=system_info.get('Z1'),
-            A2=system_info.get('A2'),
-            Z2=system_info.get('Z2')
-        )
-        
-        agg_unm = AggregateAnalyzer(
-            system_label=system_info.get('label'),
-            sqrt_s_NN=system_info.get('sqrt_s_NN'),
-            A1=system_info.get('A1'),
-            Z1=system_info.get('Z1'),
-            A2=system_info.get('A2'),
-            Z2=system_info.get('Z2')
-        )
-        
         # TUNED FOR 1% FLUCTON FRACTION
-        cumulative_analyzer = CumulativeAnalyzer(
-            threshold_strength=0.01,       # 1% excess = 1% flucton fraction
-            threshold_confidence=0.05,     # Moderate confidence for subtle effects
-            threshold_absolute_excess=0
-        )
-        transformer = CMToLabTransformer.from_system_info(system_info)
+        cumulative_analyzer = CumulativeAnalyzer()
+        #transformer = CMToLabTransformer.from_system_info(system_info)
         
         # Stream batches from both files
         reader_mod: ReaderBase = MultiFormatReader.open(str(file_mod), self.file_format)
@@ -162,20 +135,13 @@ class UnifiedAnalysisEngine:
             reader_unm.stream_batch(batch_size)
         ):
             # Convert to lab system
-            batch_mod_lab = transformer.transform_batch(batch_mod)
-            batch_unm_lab = transformer.transform_batch(batch_unm)
-
-            # Accumulate statistics for both datasets
-            for event_particles in batch_mod_lab:
-                agg_mod.accumulate_event(event_particles)
-            
-            for event_particles in batch_unm_lab:
-                agg_unm.accumulate_event(event_particles)
+            #batch_mod_lab = batch_mod #transformer.transform_batch(batch_mod)
+            #batch_unm_lab = batch_unm #transformer.transform_batch(batch_unm)
             
             # Analyze cumulative effects
-            cumulative_analyzer.process_batch(batch_mod_lab, batch_unm_lab)
+            cumulative_analyzer.process_batch(batch_mod, batch_unm)
             
-            total_events += len(batch_mod_lab)
+            total_events += len(batch_mod)
             
             # Clear batch from memory immediately
             batch_mod.clear()
@@ -185,7 +151,7 @@ class UnifiedAnalysisEngine:
             if progress_callback:
                 progress_callback(f"Processed {total_events:6d} event pairs")
         
-        return (agg_mod, agg_unm, cumulative_analyzer, total_events, system_info)
+        return (cumulative_analyzer, total_events, system_info)
 
     @staticmethod
     def _analyze_single_run_comparison(
@@ -230,7 +196,7 @@ class UnifiedAnalysisEngine:
             # Process files with batch streaming
             engine: UnifiedAnalysisEngine = UnifiedAnalysisEngine(data_root, results_root, run_mode="comparison", batch_size=batch_size)
             
-            agg_mod, agg_unm, cumulative_analyzer, n_events, system_info = \
+            cumulative_analyzer, n_events, system_info = \
                 engine._process_files_parallel(
                     mod_file, unm_file, run_name, batch_size,
                     system_info=None,
@@ -245,74 +211,45 @@ class UnifiedAnalysisEngine:
             report_progress("Analyzing", f"{n_events:,d} event pairs")
             
             # 1. Process Modified (Plot, Stats, then DELETE)
-            report_progress("Plotting modified", "Generating...")
-            out_dir_mod = results_root / "modified" / run_name
-            out_dir_mod.mkdir(parents=True, exist_ok=True)
-            agg_mod.plot_distributions(out_dir_mod)
-            stats_mod = agg_mod.get_statistics()
-            del agg_mod
-            gc.collect()
-            report_progress("Plotting modified", "done")
+            #report_progress("Plotting modified", "Generating...")
+            #out_dir_mod = results_root / "modified" / run_name
+            #out_dir_mod.mkdir(parents=True, exist_ok=True)
+            #agg_mod.plot_distributions(out_dir_mod)
+            #stats_mod = agg_mod.get_statistics()
+            #del agg_mod
+            #gc.collect()
+            #report_progress("Plotting modified", "done")
 
             # 2. Process Unmodified (Plot, Stats, then DELETE)
-            report_progress("Plotting unmodified", "Generating...")
-            out_dir_unm = results_root / "unmodified" / run_name
-            out_dir_unm.mkdir(parents=True, exist_ok=True)
-            agg_unm.plot_distributions(out_dir_unm)
-            stats_unm = agg_unm.get_statistics()
-            del agg_unm
-            gc.collect()
-            report_progress("Plotting unmodified", "done")
+            #report_progress("Plotting unmodified", "Generating...")
+            #out_dir_unm = results_root / "unmodified" / run_name
+            #out_dir_unm.mkdir(parents=True, exist_ok=True)
+            #agg_unm.plot_distributions(out_dir_unm)
+            #stats_unm = agg_unm.get_statistics()
+            #del agg_unm
+            #gc.collect()
+            #report_progress("Plotting unmodified", "done")
 
             # 3. Plot cumulative analysis
             report_progress("Plotting cumulative", "Generating...")
             out_dir_cum = results_root / "cumulative" / run_name
             out_dir_cum.mkdir(parents=True, exist_ok=True)
             cumulative_analyzer.plot_distributions(out_dir_cum)
-            stats_cumulative, cumulative_sigs = cumulative_analyzer.get_statistics()
+            stats_cumulative = cumulative_analyzer.get_statistics()
             report_progress("Plotting cumulative", "done")
             del cumulative_analyzer
             gc.collect()
 
             # 4. Compare
-            report_progress("Comparing", "Generating...")
-            comparator = RunComparisonAnalyzer(stats_mod, stats_unm, run_name)
-            out_dir_cmp = results_root / "comparisons" / run_name
-            out_dir_cmp.mkdir(parents=True, exist_ok=True)
-            comparator.generate_all_comparisons(out_dir_cmp)
-            del comparator
-            gc.collect()
-            report_progress("Comparing", "done")
+            #report_progress("Comparing", "Generating...")
+            #comparator = RunComparisonAnalyzer(stats_mod, stats_unm, run_name)
+            #out_dir_cmp = results_root / "comparisons" / run_name
+            #out_dir_cmp.mkdir(parents=True, exist_ok=True)
+            #comparator.generate_all_comparisons(out_dir_cmp)
+            #del comparator
+            #gc.collect()
+            #report_progress("Comparing", "done")
 
-            # Save results to JSON
-            report_progress("Saving", "Writing cumulative analysis...")
-            
-            cumulative_signatures = [
-                {
-                    'type': sig.signature_type,
-                    'strength': float(sig.strength),
-                    'confidence': float(sig.confidence),
-                    'affected_particles': sig.affected_particles,
-                    'description': sig.description
-                }
-                for sig in cumulative_sigs
-            ]
-            
-            cumulative_analysis = {
-                'total_events': int(n_events),
-                'signatures_detected': len(cumulative_sigs),
-                'signature_types': list(set(s.signature_type for s in cumulative_sigs))
-            }
-            
-            cum_json_path = results_root / "cumulative" / f"{run_name}_cumulative.json"
-            cum_json_path.parent.mkdir(parents=True, exist_ok=True)
-            
-            with open(cum_json_path, 'w') as f:
-                json.dump({
-                    'cumulative_analysis': cumulative_analysis,
-                    'signatures': cumulative_signatures
-                }, f, indent=2)
-            
             # Save statistics
             stats_json_path = results_root / "stats" / f"{run_name}_stats.json"
             stats_json_path.parent.mkdir(parents=True, exist_ok=True)
@@ -320,13 +257,13 @@ class UnifiedAnalysisEngine:
             with open(stats_json_path, 'w') as f:
                 json.dump({
                     'run_name': run_name,
-                    'modified': stats_mod,
-                    'unmodified': stats_unm,
+                    #'modified': stats_mod,
+                    #'unmodified': stats_unm,
                     'cumulative': stats_cumulative
                 }, f, indent=2, default=str)
             
             report_progress("Saving", "done")
-            del cumulative_sigs, cumulative_signatures, cumulative_analysis, stats_mod, stats_unm
+            #del cumulative_sigs, cumulative_signatures, cumulative_analysis, stats_mod, stats_unm
             gc.collect()
 
             result['success'] = True
