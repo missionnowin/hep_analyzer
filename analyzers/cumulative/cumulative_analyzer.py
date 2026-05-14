@@ -198,8 +198,6 @@ class CumulativeAnalyzer:
                     tags_for_this_particle.append("pions")
                 if pid in MUONS:
                     tags_for_this_particle.append("muons")
-                for sp in tags_for_this_particle:
-                    bkt = self._buckets[sp][tag]
 
                 for sp in tags_for_this_particle:
                     bkt = self._buckets[sp][tag]
@@ -654,9 +652,9 @@ class CumulativeAnalyzer:
             bottom = np.zeros_like(centers, dtype=float)
             for sp, label, color in species_order:
                 vals = np.where(ok, fracs[sp], 0.0)
-                ax.bar(centers, vals, width=widths * 0.95,
+                ax.bar(centers, vals, width=widths, align="center",
                        bottom=bottom, color=color, label=label,
-                       edgecolor="none")
+                       edgecolor="none", linewidth=0)
                 bottom = bottom + np.nan_to_num(vals, nan=0.0)
             ax.axvline(1.0, color="white", ls="--", lw=1.2, alpha=0.85)
             ax.set_xlim(0, 3.0)
